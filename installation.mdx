@@ -1,0 +1,265 @@
+---
+title: "Installation"
+description: "Install FRR from packages, Snapcraft, or build from source"
+---
+
+FRR can be installed in three ways: from pre-built distribution packages, from Snap (Snapcraft), or compiled directly from source. Building from source gives you the latest features and full control over compile-time options.
+
+<Tabs>
+  <Tab title="Packages">
+    ## Installing from packages
+
+    The FRRouting project publishes pre-built packages for the following distributions:
+
+    - **Red Hat / CentOS** — `.rpm` packages
+    - **Debian / Ubuntu** — `.deb` packages
+
+    Packages are published on the [GitHub releases page](https://github.com/FRRouting/frr/releases). External contributors also maintain packages for \*BSD, Alpine Linux, Gentoo, and Docker.
+
+    <CodeGroup>
+
+    ```bash Debian / Ubuntu
+    # Download the .deb package for your architecture from:
+    # https://github.com/FRRouting/frr/releases
+
+    # Install the downloaded package
+    sudo dpkg -i frr_<version>_<arch>.deb
+
+    # Install any missing dependencies
+    sudo apt-get install -f
+    ```
+
+    ```bash Red Hat / CentOS
+    # Download the .rpm package for your architecture from:
+    # https://github.com/FRRouting/frr/releases
+
+    # Install the downloaded package
+    sudo rpm -ivh frr-<version>.<arch>.rpm
+    ```
+
+    </CodeGroup>
+
+    <Note>
+      Some Linux distributions include FRR in their own repositories. Check your distribution's package manager first — though the version available may be older than the latest upstream release.
+    </Note>
+  </Tab>
+
+  <Tab title="Snap">
+    ## Installing from Snapcraft
+
+    FRR is published as a universal Snap package, making installation simple on any Linux distribution that supports snapd.
+
+    ```bash
+    sudo snap install frr
+    ```
+
+    Snap packages are available at [snapcraft.io/frr](https://snapcraft.io/frr). The Snap variant is kept up to date with upstream releases and handles confinement and updates automatically.
+
+    <Info>
+      Snap packages run in a confined environment. Some advanced features that require direct kernel or filesystem access may behave differently compared to a native package or source installation.
+    </Info>
+  </Tab>
+
+  <Tab title="Source">
+    ## Building from source
+
+    Building from source is the best way to get the latest features and bug fixes, or to enable specific compile-time options not included in distribution packages.
+
+    <Steps>
+      <Step title="Clone the repository">
+        FRR's source is hosted on GitHub. The `master` branch is the primary development branch and should be considered unstable. For production use, check out a stable release branch such as `stable/7.1`.
+
+        ```bash
+        git clone https://github.com/FRRouting/frr.git
+        cd frr
+
+        # Optional: switch to a stable release branch
+        git checkout stable/7.1
+        ```
+      </Step>
+
+      <Step title="Install build dependencies">
+        The required packages differ by distribution. Install the full set for your platform before running `./bootstrap.sh`.
+
+        <CodeGroup>
+
+        ```bash Ubuntu 18.04 / Debian
+        sudo apt update
+        sudo apt-get install \
+          git autoconf automake libtool make libreadline-dev texinfo \
+          pkg-config libpam0g-dev libjson-c-dev bison flex python-pytest \
+          libc-ares-dev python3-dev libsystemd-dev python-ipaddress python3-sphinx \
+          install-info build-essential libsystemd-dev libsnmp-dev perl
+        ```
+
+        ```bash CentOS 7 / RHEL
+        sudo yum install git autoconf automake libtool make \
+          readline-devel texinfo net-snmp-devel groff pkgconfig \
+          json-c-devel pam-devel bison flex pytest c-ares-devel \
+          python-devel systemd-devel python-sphinx
+        ```
+
+        </CodeGroup>
+      </Step>
+
+      <Step title="Create the frr user and groups">
+        FRR daemons drop privileges at startup and run as a dedicated system user. Create the required user and groups before installing.
+
+        <CodeGroup>
+
+        ```bash Ubuntu / Debian
+        sudo groupadd -r -g 92 frr
+        sudo groupadd -r -g 85 frrvty
+        sudo adduser --system --ingroup frr --home /var/run/frr/ \
+          --gecos "FRR suite" --shell /sbin/nologin frr
+        sudo usermod -a -G frrvty frr
+        ```
+
+        ```bash CentOS / RHEL
+        sudo groupadd -g 92 frr
+        sudo groupadd -r -g 85 frrvty
+        sudo useradd -u 92 -g 92 -M -r -G frrvty -s /sbin/nologin \
+          -c "FRR FRRouting suite" -d /var/run/frr frr
+        ```
+
+        </CodeGroup>
+      </Step>
+
+      <Step title="Run bootstrap and configure">
+        First, update the build system to install any missing build scripts and refresh the Autotools configuration:
+
+        ```bash
+        ./bootstrap.sh
+        ```
+
+        Then run `./configure` with your desired options. The example below reflects a common production configuration:
+
+        ```bash
+        ./configure \
+            --prefix=/usr \
+            --sbindir=/usr/lib/frr \
+            --sysconfdir=/etc/frr \
+            --libdir=/usr/lib/frr \
+            --libexecdir=/usr/lib/frr \
+            --localstatedir=/var/run/frr \
+            --with-moduledir=/usr/lib/frr/modules \
+            --enable-snmp=agentx \
+            --enable-multipath=64 \
+            --enable-user=frr \
+            --enable-group=frr \
+            --enable-vty-group=frrvty \
+            --enable-systemd=yes \
+            --enable-pimd \
+            --enable-watchfrr \
+            --enable-fpm
+        ```
+
+        See the [key configure flags](#key-configure-flags) section below for a reference of the most useful options.
+      </Step>
+
+      <Step title="Compile and install">
+        ```bash
+        make
+        sudo make install
+        ```
+
+        If everything completes without error, FRR binaries and libraries are installed at the paths specified in your configure step. Proceed to [Basic Setup](/basic-setup) to enable daemons and start the service.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Key configure flags
+
+The `./configure` script accepts many options to enable or disable specific daemons and features. The following are the most commonly used:
+
+### Daemon control
+
+| Flag | Description |
+|------|-------------|
+| `--disable-zebra` | Do not build Zebra. Only useful when running `bgpd` as a standalone BGP route server. |
+| `--disable-bgpd` | Do not build bgpd. |
+| `--disable-ospfd` | Do not build ospfd (OSPFv2). |
+| `--disable-ospf6d` | Do not build ospf6d (OSPFv3). |
+| `--disable-ripd` | Do not build ripd. |
+| `--disable-ripngd` | Do not build ripngd. |
+| `--disable-isisd` | Do not build isisd. |
+| `--disable-pimd` | Do not build pimd. Required on some BSDs that lack kernel multicast support. |
+| `--disable-ldpd` | Do not build ldpd. |
+| `--disable-nhrpd` | Do not build nhrpd. |
+| `--disable-eigrpd` | Do not build eigrpd. |
+| `--disable-babeld` | Do not build babeld. |
+| `--disable-bfdd` | Do not build bfdd. |
+| `--disable-fabricd` | Do not build fabricd (OpenFabric). |
+| `--disable-pbrd` | Do not build pbrd. This daemon requires Linux to function. |
+| `--disable-staticd` | Do not build staticd. Required for static routes. |
+| `--disable-watchfrr` | Do not build watchfrr. Disabling this also disables systemd integration. |
+| `--enable-sharpd` | Build sharpd — a testing and route generation tool. Off by default. |
+
+### Feature flags
+
+| Flag | Description |
+|------|-------------|
+| `--enable-systemd` | Build watchfrr with systemd integration so FRR can notify systemd on successful startup. |
+| `--enable-snmp` | Enable SNMP support (disabled by default). |
+| `--enable-multipath=X` | Build with support for up to X-way ECMP (0–999). Defaults to 16 if not specified; 0 maps to 64 for backward compatibility. |
+| `--enable-datacenter` | Enable system defaults suited for data center deployments. |
+| `--enable-fpm` | Build with Forwarding Plane Manager (FPM) module support. |
+| `--enable-config-rollbacks` | Enable configuration rollback support. Requires SQLite3. |
+| `--enable-sysrepo` | Build the Sysrepo northbound plugin. |
+| `--enable-confd=<dir>` | Build the ConfD northbound plugin. |
+| `--disable-vtysh` | Build without the vtysh unified CLI. |
+| `--enable-dev-build` | Enable development options: `-g3 -O0` and grammar sandbox. Not for production. |
+
+### Installation paths
+
+| Flag | Description |
+|------|-------------|
+| `--prefix <prefix>` | Install architecture-independent files under `prefix` (default: `/usr/local`). |
+| `--sysconfdir <dir>` | Look for and install configuration files in `dir`. |
+| `--localstatedir <dir>` | Directory for local state files such as PID files and UNIX sockets. |
+| `--sbindir <dir>` | Install daemon binaries in `dir`. |
+
+### Privilege separation
+
+| Flag | Description |
+|------|-------------|
+| `--enable-user <user>` | Drop privileges and run as this user after startup (default: `frr`). |
+| `--enable-group <group>` | Switch to this group after startup (default: `frr`). |
+| `--enable-vty-group <group>` | Set group ownership on VTY sockets, enabling non-root users to run vtysh. |
+
+<Tip>
+  On systems with the `libcap` library (Linux), FRR retains only the minimal capabilities it needs and raises them briefly when required. On systems without `libcap`, FRR temporarily raises its UID to 0 for privileged operations.
+</Tip>
+
+## Linux kernel settings
+
+When using Linux as a router, several kernel parameters should be configured before starting FRR. Add these to `/etc/sysctl.conf` or a file under `/etc/sysctl.d/`:
+
+```ini
+# Enable IPv4 and IPv6 packet forwarding
+net.ipv4.conf.all.forwarding=1
+net.ipv6.conf.all.forwarding=1
+```
+
+Apply without rebooting:
+
+```bash
+sudo sysctl -p
+```
+
+For MPLS support, load the required kernel modules by adding them to `/etc/modules-load.d/modules.conf`:
+
+```
+# Load MPLS Kernel Modules
+mpls_router
+mpls_iptunnel
+```
+
+Then enable MPLS forwarding per interface in `/etc/sysctl.conf`:
+
+```ini
+net.mpls.conf.eth0.input=1
+net.mpls.conf.eth1.input=1
+net.mpls.platform_labels=100000
+```

@@ -1,0 +1,312 @@
+---
+title: "Route Maps"
+description: "Route maps for advanced routing policy: match conditions and set actions"
+---
+
+Route maps provide a mechanism to both filter and apply actions to routes, enabling policy to be applied based on a wide range of route attributes. They are an ordered list of entries, each of which specifies optional matching conditions, optional set actions, and a matching policy of either `permit` or `deny`.
+
+## How route maps work
+
+Each route-map entry is evaluated in sequence-number order. The table below summarises what happens when an entry matches or does not match:
+
+|  | Match | No match |
+|---|---|---|
+| **permit** | Apply set actions, then permit the route (unless exit policy changes this) | Continue to next entry |
+| **deny** | Deny the route — stop processing | Continue to next entry |
+
+If no entry matches, the route is **denied** by default. To change this, add an empty `permit` entry at the end of the route map with no match conditions (which matches everything).
+
+## Route map command
+
+```frr
+route-map ROUTE-MAP-NAME (permit|deny) ORDER
+```
+
+Defines the `ORDER`th entry in the named route map with a matching policy of `permit` or `deny`. Entries with lower `ORDER` values are evaluated first.
+
+**Example — three-entry route map:**
+
+```frr
+route-map EXAMPLE deny 10
+ match ip address prefix-list BAD-PREFIXES
+
+route-map EXAMPLE permit 20
+ match community 70
+ set local-preference 200
+ set community 65000:100 additive
+
+route-map EXAMPLE permit 30
+```
+
+Entry 10 denies any route matching the prefix list `BAD-PREFIXES`. Entry 20 permits and modifies routes that match community list 70. Entry 30 (empty permit) allows everything else through unchanged.
+
+## Match clauses
+
+Match clauses define conditions that must be met for the route-map entry to apply. If multiple `match` statements appear in one entry, all must match (logical AND). If no match clauses are specified, the entry matches every route.
+
+### IP address
+
+```frr
+match ip address ACCESS_LIST
+match ip address prefix-list PREFIX_LIST
+match ip address prefix-len 0-32
+```
+
+Matches routes whose destination network is permitted by the specified access list or prefix list. `prefix-len` is Zebra-specific and matches an exact prefix length.
+
+### IPv6 address
+
+```frr
+match ipv6 address ACCESS_LIST
+match ipv6 address prefix-list PREFIX_LIST
+match ipv6 address prefix-len 0-128
+```
+
+Same as the IPv4 variants but for IPv6 prefixes. `prefix-len` matching is Zebra-specific.
+
+### Next-hop
+
+```frr
+match ip next-hop IPV4_ADDR
+```
+
+Matches routes whose next-hop IP address equals `IPV4_ADDR`.
+
+### AS path
+
+```frr
+match as-path WORD
+```
+
+Matches routes whose `AS_PATH` attribute is permitted by the named AS path access list. Used in BGP contexts.
+
+### Metric
+
+```frr
+match metric METRIC
+```
+
+Matches routes with the specified metric value.
+
+### Tag
+
+```frr
+match tag TAG
+```
+
+Matches routes carrying the specified route tag. Tag values range from 1 to 4294967295.
+
+### Local preference
+
+```frr
+match local-preference METRIC
+```
+
+Matches BGP routes with the specified `LOCAL_PREF` value.
+
+### Community
+
+```frr
+match community COMMUNITY_LIST
+```
+
+Matches BGP routes whose community attribute is permitted by the named community list.
+
+### BGP peer
+
+```frr
+match peer IPV4_ADDR
+match peer IPV6_ADDR
+match peer INTERFACE_NAME
+```
+
+BGP-specific match. Matches the peer from which the route was received, identified by address or interface name.
+
+### Source protocol (Zebra)
+
+```frr
+match source-protocol PROTOCOL_NAME
+match source-instance NUMBER
+```
+
+Zebra-specific. Matches routes by the originating routing protocol (`connected`, `static`, `ospf`, `bgp`, etc.) or a specific protocol instance number (0–255).
+
+## Set clauses
+
+Set clauses modify route attributes when an entry matches with a `permit` policy. Multiple `set` statements can appear in a single entry.
+
+### Tag
+
+```frr
+set tag TAG
+```
+
+Sets a route tag (1–4294967295). When compiled with `--enable-realms`, values 1–255 are sent to the Linux kernel as realm values for use with traffic control policy.
+
+### Next-hop
+
+```frr
+set ip next-hop IPV4_ADDRESS
+set ip next-hop peer-address
+set ip next-hop unchanged
+```
+
+Overrides the BGP next-hop. `peer-address` uses the peer's own address as the next-hop. `unchanged` passes the route through without modifying the next-hop value.
+
+```frr
+set ipv6 next-hop global IPV6_ADDRESS
+set ipv6 next-hop local IPV6_ADDRESS
+set ipv6 next-hop peer-address
+set ipv6 next-hop prefer-global
+```
+
+IPv6 variants. `prefer-global` prefers the global address over the link-local address when both are available.
+
+### Local preference
+
+```frr
+set local-preference LOCAL_PREF
+```
+
+Sets the BGP `LOCAL_PREF` attribute. Higher values are preferred within an AS.
+
+### Weight
+
+```frr
+set weight WEIGHT
+```
+
+Sets the route weight, a Cisco-style local attribute that influences path selection. The highest weight is preferred and not propagated to peers.
+
+### Metric (MED)
+
+```frr
+set metric METRIC
+```
+
+Sets the BGP `MED` (Multi-Exit Discriminator) attribute, which can influence which path an external AS uses to reach your network.
+
+### AS path prepend
+
+```frr
+set as-path prepend AS_PATH
+set as-path prepend last-as NUM
+```
+
+Prepends the specified AS numbers to the `AS_PATH`, effectively making the path appear longer to influence inbound traffic. `last-as NUM` prepends the leftmost (last received) AS number `NUM` times.
+
+### Community
+
+```frr
+set community COMMUNITY
+```
+
+Sets the BGP community attribute. Accepts `AS:VAL` formatted values and well-known names such as `no-export`, `no-advertise`, and `internet`.
+
+### Origin
+
+```frr
+set origin ORIGIN <egp|igp|incomplete>
+```
+
+Sets the BGP `ORIGIN` attribute: `igp` for locally originated routes, `egp` for routes learned via EGP, `incomplete` for routes of unknown origin.
+
+## Exit policy clauses
+
+Exit policy clauses override the normal "stop processing and permit the route" behaviour after a successful match.
+
+### Continue to next entry
+
+```frr
+on-match next
+continue
+```
+
+After applying any set actions, continue processing the next entry in the route map rather than stopping. This allows multiple entries to accumulate set actions on the same route.
+
+### Jump to a specific entry
+
+```frr
+on-match goto N
+continue N
+```
+
+After applying set actions, jump to the first entry whose order number is greater than or equal to `N`. Jumping backward (to a lower sequence number) is not permitted.
+
+## Call action
+
+```frr
+call NAME
+```
+
+Calls another route map by name after any set actions have been applied. If the called route map returns `deny`, the current route is denied regardless of the matching policy of the calling entry. If it returns `permit`, the calling entry's exit policy governs further processing.
+
+## Multi-stanza route-map example
+
+The following example shows a realistic BGP inbound policy applied to a customer peer:
+
+```frr
+! Community lists used by the route map
+ip community-list standard cm-blackhole permit 64512:100
+ip community-list standard cm-set-no-export permit 64512:200
+ip community-list standard cm-cust-only permit 64512:300
+
+! Drop routes tagged by the customer as blackhole
+route-map CUSTOMER-IN deny 10
+ match community cm-blackhole
+
+! Set no-export on routes the customer requests
+route-map CUSTOMER-IN permit 20
+ match community cm-set-no-export
+ set community no-export additive
+ on-match next
+
+! Apply local preference to customer-only routes
+route-map CUSTOMER-IN permit 30
+ match community cm-cust-only
+ set local-preference 150
+ on-match next
+
+! Accept all other routes with default local preference
+route-map CUSTOMER-IN permit 40
+```
+
+And an outbound policy that strips private communities before advertising:
+
+```frr
+route-map CUSTOMER-OUT permit 10
+ set community 64512:100 delete
+ set community 64512:200 delete
+ set community 64512:300 delete
+```
+
+## Applying route maps to BGP neighbors
+
+Route maps are applied to BGP neighbors in the address family context using the `in` or `out` direction:
+
+```frr
+router bgp 65000
+ neighbor 192.168.0.1 remote-as 65001
+ neighbor 192.168.0.1 route-map CUSTOMER-IN in
+ neighbor 192.168.0.1 route-map CUSTOMER-OUT out
+```
+
+`in` applies the route map to routes received from the neighbor before they enter the local RIB. `out` applies the route map to routes advertised to the neighbor.
+
+<Tip>
+  By default, attribute modifications made by an outbound route map are not reflected in reflected routes on a route reflector. Use `bgp route-reflector allow-outbound-policy` to change this behaviour.
+</Tip>
+
+## Applying route maps to VPN route leaking
+
+Route maps can also be applied to VPN import/export operations between VRFs:
+
+```frr
+router bgp 65000
+ address-family ipv4 unicast vrf blue
+  route-map vpn import LEAK-IN
+  route-map vpn export LEAK-OUT
+ exit-address-family
+```
+
+See [VRF Support](/configuration/vrf) for more on route leaking between VRFs.

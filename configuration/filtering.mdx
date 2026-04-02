@@ -1,0 +1,315 @@
+---
+title: "Filtering"
+description: "Access lists, prefix lists, and AS path filters for controlling routing information"
+---
+
+FRR provides several flexible filtering mechanisms for both inbound and outbound routing information. Once a filter is defined it can be applied in any direction — on BGP neighbors, redistributed routes, and more.
+
+<CardGroup cols={2}>
+  <Card title="IP Access Lists" icon="shield">
+    Simple permit/deny rules matching IPv4 networks.
+  </Card>
+  <Card title="IP Prefix Lists" icon="list">
+    Prefix-based filtering with length range matching (`le`/`ge`).
+  </Card>
+  <Card title="AS Path Access Lists" icon="route">
+    Regex-based filtering on BGP AS_PATH attributes.
+  </Card>
+  <Card title="Community Lists" icon="tag">
+    Match or filter routes by BGP community values.
+  </Card>
+</CardGroup>
+
+## IP access lists
+
+Access lists provide basic permit/deny filtering based on IPv4 network prefixes.
+
+```frr
+access-list NAME permit IPV4-NETWORK
+access-list NAME deny IPV4-NETWORK
+```
+
+Rules are evaluated in the order they are defined. The first matching entry determines the result.
+
+**Example** — deny the more-specific `/9` but permit the covering `/8`:
+
+```frr
+access-list filter deny 10.0.0.0/9
+access-list filter permit 10.0.0.0/8
+```
+
+To remove an access list entirely:
+
+```frr
+no access-list NAME
+```
+
+<Note>
+  Access list matching is exact by default — a rule for `10.0.0.0/8` matches only that exact prefix, not subnets of it. Use prefix lists with `le`/`ge` to match prefix length ranges.
+</Note>
+
+## IP prefix lists
+
+`ip prefix-list` is the most powerful prefix-based filtering mechanism in FRR. In addition to access list functionality, prefix lists support:
+
+- **Prefix length range matching** using `le` (less than or equal) and `ge` (greater than or equal)
+- **Sequential numbering** for inserting entries at arbitrary positions
+
+If no `ip prefix-list` is specified, the default action is permit. If a prefix list is defined and no entry matches, the default action is deny.
+
+### Syntax
+
+```frr
+ip prefix-list NAME (permit|deny) PREFIX [le LEN] [ge LEN]
+ip prefix-list NAME seq NUMBER (permit|deny) PREFIX [le LEN] [ge LEN]
+```
+
+| Parameter | Description |
+|---|---|
+| `seq NUMBER` | Explicit sequence number (any value up to 4294967295). Auto-assigned numbers increment by 5. |
+| `le LEN` | Match if the prefix length is **less than or equal to** `LEN`. |
+| `ge LEN` | Match if the prefix length is **greater than or equal to** `LEN`. |
+
+`le` and `ge` can be combined. The order of `le` and `ge` does not matter.
+
+When neither `le` nor `ge` is specified, the prefix length must match exactly.
+
+Matching proceeds from the lowest sequence number to the highest and stops at the first match.
+
+### Examples
+
+**Exact match** — only `192.168.0.0/24`:
+
+```frr
+ip prefix-list EXACT permit 192.168.0.0/24
+```
+
+**All subnets** of `10.0.0.0/8` with a prefix length up to `/24`:
+
+```frr
+ip prefix-list SUBNETS permit 10.0.0.0/8 le 24
+```
+
+**Only host routes** (`/32`) inside `172.16.0.0/12`:
+
+```frr
+ip prefix-list HOSTS permit 172.16.0.0/12 ge 32
+```
+
+**Range of prefix lengths** — `/24` through `/28` inside `192.168.0.0/16`:
+
+```frr
+ip prefix-list RANGES permit 192.168.0.0/16 ge 24 le 28
+```
+
+**Full example** with multiple entries and explicit sequence numbers:
+
+```frr
+ip prefix-list FILTER seq 5  deny   192.168.1.0/24
+ip prefix-list FILTER seq 10 permit 192.168.0.0/16 le 24
+ip prefix-list FILTER seq 15 permit 10.0.0.0/8 ge 16 le 24
+ip prefix-list FILTER seq 20 deny   0.0.0.0/0 le 32
+```
+
+### Descriptions
+
+```frr
+ip prefix-list NAME description DESC
+no ip prefix-list NAME description [DESC]
+```
+
+Adds a human-readable description to a prefix list for documentation purposes.
+
+### Sequential number display
+
+```frr
+ip prefix-list sequence-number
+no ip prefix-list sequence-number
+```
+
+By default, sequence numbers are shown in `show` output. Use the `no` form to suppress them.
+
+### Show and clear commands
+
+```frr
+show ip prefix-list
+show ip prefix-list NAME
+show ip prefix-list NAME seq NUM
+show ip prefix-list NAME A.B.C.D/M
+show ip prefix-list NAME A.B.C.D/M longer
+show ip prefix-list NAME A.B.C.D/M first-match
+show ip prefix-list summary
+show ip prefix-list summary NAME
+show ip prefix-list detail
+show ip prefix-list detail NAME
+```
+
+```frr
+clear ip prefix-list
+clear ip prefix-list NAME
+clear ip prefix-list NAME A.B.C.D/M
+```
+
+`clear ip prefix-list` resets the match counters for all or named prefix lists.
+
+## IPv6 prefix lists
+
+IPv6 prefix lists follow the same syntax as IPv4, using the `ipv6` keyword:
+
+```frr
+ipv6 prefix-list NAME (permit|deny) IPV6-PREFIX [le LEN] [ge LEN]
+ipv6 prefix-list NAME seq NUMBER (permit|deny) IPV6-PREFIX [le LEN] [ge LEN]
+```
+
+**Example** — permit all IPv6 prefixes more specific than `/32` within `2001:db8::/32`:
+
+```frr
+ipv6 prefix-list V6FILTER permit 2001:db8::/32 ge 33
+ipv6 prefix-list V6FILTER deny ::/0 le 128
+```
+
+## AS path access lists (BGP)
+
+AS path access lists filter BGP routes based on the `AS_PATH` attribute using POSIX extended regular expressions.
+
+```frr
+ip as-path access-list WORD permit|deny LINE
+no ip as-path access-list WORD
+no ip as-path access-list WORD permit|deny LINE
+```
+
+`LINE` is a regular expression matched against the AS path string.
+
+**Common patterns:**
+
+| Pattern | Meaning |
+|---|---|
+| `^$` | Locally originated routes (empty AS path) |
+| `_64512_` | Routes that traversed AS 64512 (anywhere in path) |
+| `^64512` | Routes originating from AS 64512 |
+| `64512$` | Routes with AS 64512 as the last AS |
+| `^64512_` | Routes where AS 64512 is the first AS |
+
+**Example:**
+
+```frr
+ip as-path access-list asp-own-as permit ^$
+ip as-path access-list asp-own-as permit _64512_
+```
+
+<Tip>
+  AS path access lists are used in route maps with the `match as-path WORD` condition. See [Route Maps](/configuration/route-maps) for details.
+</Tip>
+
+## Community lists (BGP)
+
+Community lists match or filter BGP routes by their community attribute values. There are two types:
+
+**Standard** — matches against literal community values:
+
+```frr
+ip community-list standard NAME permit|deny COMMUNITY
+```
+
+**Expanded** — matches against a regular expression:
+
+```frr
+ip community-list expanded NAME permit|deny COMMUNITY
+```
+
+Community values use the `AS:VAL` format, for example `7675:80`. Well-known values like `no-export`, `no-advertise`, and `internet` are also accepted.
+
+**Example community lists:**
+
+```frr
+ip community-list standard cm-blackhole    permit 64512:100
+ip community-list standard cm-no-export    permit 64512:200
+ip community-list standard cm-cust-only    permit 64512:300
+ip community-list standard cm-upstream     permit 64512:400
+```
+
+**Numbered community lists:** Numbers 1–99 define standard lists; 100–199 define expanded lists:
+
+```frr
+ip community-list 70  permit 7675:70
+ip community-list 70  deny
+ip community-list 80  permit 7675:80
+ip community-list 80  deny
+```
+
+**Show community lists:**
+
+```frr
+show ip community-list
+show ip community-list NAME
+```
+
+Output example:
+
+```frr
+# show ip community-list
+Named Community standard list CLIST
+  permit 7675:80 7675:100 no-export
+  deny internet
+Named Community expanded list EXPAND
+  permit :
+```
+
+To remove a community list:
+
+```frr
+no ip community-list [standard|expanded] NAME
+```
+
+## Applying filters
+
+Filters are not active until applied to a routing context. The most common application points are BGP neighbors and route redistribution.
+
+### BGP neighbor inbound/outbound filters
+
+<Tabs>
+  <Tab title="Prefix list on neighbor">
+    ```frr
+    router bgp 65001
+     neighbor 10.0.0.1 prefix-list FILTER in
+     neighbor 10.0.0.1 prefix-list EXPORT out
+    ```
+  </Tab>
+  <Tab title="Access list on neighbor">
+    ```frr
+    router bgp 65001
+     neighbor 10.0.0.1 distribute-list filter in
+    ```
+  </Tab>
+  <Tab title="AS path filter on neighbor">
+    ```frr
+    router bgp 65001
+     neighbor 10.0.0.1 filter-list asp-own-as in
+    ```
+  </Tab>
+</Tabs>
+
+### OSPF redistribution with a prefix list
+
+```frr
+router ospf
+ redistribute connected
+ distribute-list MYLIST out connected
+```
+
+### Full inbound filtering example
+
+This example filters inbound BGP routes from a peer, allowing only prefixes within `10.0.0.0/8` that are `/24` or shorter:
+
+```frr
+ip prefix-list CUSTOMER-IN seq 5  permit 10.0.0.0/8 le 24
+ip prefix-list CUSTOMER-IN seq 10 deny   0.0.0.0/0 le 32
+
+router bgp 65000
+ neighbor 192.168.1.1 remote-as 65001
+ neighbor 192.168.1.1 prefix-list CUSTOMER-IN in
+```
+
+<Warning>
+  If a prefix list is defined but no entry matches an incoming route, the default action is **deny**. Always add an explicit terminal `permit` or `deny` entry to make the policy clear.
+</Warning>

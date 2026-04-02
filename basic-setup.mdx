@@ -1,0 +1,283 @@
+---
+title: "Basic Setup"
+description: "Enable daemons, configure the daemons file, and start FRR services"
+---
+
+After installing FRR, some basic configuration must be completed before it is ready to use. A fresh installation starts no daemons by default — you must explicitly enable the ones you need, then start the service.
+
+<Steps>
+  <Step title="Edit the daemons file to enable daemons">
+    The file `/etc/frr/daemons` controls which daemons are started when the FRR service is started or restarted. By default every daemon is set to `no`:
+
+    ```text /etc/frr/daemons
+    zebra=no
+    bgpd=no
+    ospfd=no
+    ospf6d=no
+    ripd=no
+    ripngd=no
+    isisd=no
+    pimd=no
+    ldpd=no
+    nhrpd=no
+    eigrpd=no
+    babeld=no
+    sharpd=no
+    staticd=no
+    pbrd=no
+    bfdd=no
+    fabricd=no
+    ```
+
+    To enable a daemon, change the corresponding `no` to `yes`. For example, to run a BGP router with BFD support:
+
+    ```text /etc/frr/daemons
+    zebra=yes
+    bgpd=yes
+    ospfd=no
+    ospf6d=no
+    ripd=no
+    ripngd=no
+    isisd=no
+    pimd=no
+    ldpd=no
+    nhrpd=no
+    eigrpd=no
+    babeld=no
+    sharpd=no
+    staticd=yes
+    pbrd=no
+    bfdd=yes
+    fabricd=no
+    ```
+
+    <Warning>
+      Zebra must be enabled whenever any other protocol daemon is running. It is the routing manager that brokers routes between protocol daemons and the kernel. Only disable it if you are running `bgpd` in standalone route-server mode.
+    </Warning>
+  </Step>
+
+  <Step title="Configure daemon options">
+    The same `/etc/frr/daemons` file also contains per-daemon option strings and the `vtysh_enable` setting. A complete example:
+
+    ```text /etc/frr/daemons
+    #
+    # If this option is set the /etc/init.d/frr script automatically loads
+    # the config via "vtysh -b" when the servers are started.
+    # Check /etc/pam.d/frr if you intend to use "vtysh"!
+    #
+    vtysh_enable=yes
+    zebra_options=" -s 90000000 --daemon -A 127.0.0.1"
+    bgpd_options="   --daemon -A 127.0.0.1"
+    ospfd_options="  --daemon -A 127.0.0.1"
+    ospf6d_options=" --daemon -A ::1"
+    ripd_options="   --daemon -A 127.0.0.1"
+    ripngd_options=" --daemon -A ::1"
+    isisd_options="  --daemon -A 127.0.0.1"
+    pimd_options="   --daemon -A 127.0.0.1"
+    ldpd_options="   --daemon -A 127.0.0.1"
+    nhrpd_options="  --daemon -A 127.0.0.1"
+    eigrpd_options=" --daemon -A 127.0.0.1"
+    babeld_options=" --daemon -A 127.0.0.1"
+    sharpd_options=" --daemon -A 127.0.0.1"
+    staticd_options=" --daemon -A 127.0.0.1"
+    pbrd_options="   --daemon -A 127.0.0.1"
+    bfdd_options="   --daemon -A 127.0.0.1"
+    fabricd_options=" --daemon -A 127.0.0.1"
+
+    # watchfrr_options=""
+    ```
+
+    **`vtysh_enable=yes`** — When set, the init script automatically loads the saved configuration by running `vtysh -b` when daemons start. This is strongly recommended for most deployments.
+
+    **`<daemon>_options`** — Each line passes command-line flags to the named daemon. The two most important flags are:
+
+    | Flag | Meaning |
+    |------|---------|
+    | `--daemon` | Run in background (daemonize). |
+    | `-A <address>` | Bind the VTY socket to this address. Use `127.0.0.1` for IPv4 daemons, `::1` for IPv6 daemons. |
+
+    The `zebra_options` line includes `-s 90000000`, which sets the route table socket buffer size to 90 MB — useful for large routing tables.
+  </Step>
+
+  <Step title="Set up the systemd service">
+    If you installed from packages, the systemd unit file is already in place. To verify:
+
+    ```bash
+    systemctl status frr.service
+    ```
+
+    If the service is not found (common when building from source), copy the unit file from the repository into the systemd directory:
+
+    ```bash
+    sudo install -m 644 tools/frr.service /etc/systemd/system/frr.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable frr
+    ```
+  </Step>
+
+  <Step title="Start FRR">
+    ```bash
+    sudo systemctl start frr
+    ```
+
+    To stop:
+
+    ```bash
+    sudo systemctl stop frr
+    ```
+
+    To restart after editing the `daemons` file:
+
+    ```bash
+    sudo systemctl restart frr
+    ```
+
+    If startup fails, check the systemd journal for details:
+
+    ```bash
+    sudo journalctl -u frr --no-pager -n 50
+    ```
+  </Step>
+
+  <Step title="Verify daemons are running">
+    Check that the expected daemons are active:
+
+    ```bash
+    ps aux | grep frr
+    ```
+
+    Example output showing zebra, bgpd, staticd, and bfdd running:
+
+    ```
+    frr       1234  0.0  0.1  zebra -s 90000000 --daemon -A 127.0.0.1
+    frr       1256  0.0  0.1  bgpd --daemon -A 127.0.0.1
+    frr       1278  0.0  0.0  staticd --daemon -A 127.0.0.1
+    frr       1290  0.0  0.0  bfdd --daemon -A 127.0.0.1
+    frr       1301  0.0  0.0  watchfrr -d -r /usr/lib/frr/frr restart %s ...
+    ```
+
+    You can also check daemon status through vtysh:
+
+    ```bash
+    sudo vtysh -c "show version"
+    ```
+  </Step>
+
+  <Step title="Set initial passwords in vtysh">
+    Each daemon's VTY interface requires a password before it will accept connections. Set passwords via vtysh using the integrated configuration mode:
+
+    ```bash
+    sudo vtysh
+    ```
+
+    Inside vtysh:
+
+    ```
+    Router# configure terminal
+    Router(config)# hostname my-router
+    Router(config)# password mysecretpassword
+    Router(config)# enable password myenablepassword
+    Router(config)# service password-encryption
+    Router(config)# end
+    Router# write file
+    ```
+
+    <Warning>
+      Do not leave VTY interfaces without passwords. Without a `password` configured, no one can connect to the VTY interface. Without an `enable password`, no one can enter privileged mode to make configuration changes. Use `service password-encryption` to store passwords in an obfuscated form rather than plaintext in config files.
+    </Warning>
+  </Step>
+</Steps>
+
+## Configuration files
+
+FRR supports two configuration approaches:
+
+### Integrated configuration (recommended)
+
+With `vtysh_enable=yes`, all daemons are configured from a single file at `/etc/frr/frr.conf`. vtysh applies this configuration to all running daemons on startup.
+
+```text /etc/frr/frr.conf
+!
+! FRR integrated configuration file
+!
+hostname my-router
+password zebra
+enable password zebra
+!
+log file /var/log/frr/frr.log informational
+!
+```
+
+### Per-daemon configuration
+
+Each daemon also supports its own config file. The file name is the daemon name plus `.conf`. For example:
+
+| Daemon | Default config file |
+|--------|---------------------|
+| zebra | `/etc/frr/zebra.conf` |
+| bgpd | `/etc/frr/bgpd.conf` |
+| ospfd | `/etc/frr/ospfd.conf` |
+| ospf6d | `/etc/frr/ospf6d.conf` |
+| ripd | `/etc/frr/ripd.conf` |
+| isisd | `/etc/frr/isisd.conf` |
+
+You can specify a different path with the `-f` / `--config_file` flag in the daemon's options line in `/etc/frr/daemons`.
+
+A minimal example for `/etc/frr/zebra.conf`:
+
+```
+!
+! Zebra configuration file
+!
+hostname Router
+password zebra
+enable password zebra
+!
+log stdout
+!
+```
+
+<Note>
+  In FRR config files, `!` and `#` are comment characters. A comment character at the start of a word makes the rest of the line a comment. A `!` that appears mid-word is treated as a normal character — for example, `zebra!password` sets the password to the literal string `zebra!password`.
+</Note>
+
+## Service ports
+
+Each daemon listens on its own VTY TCP port. If needed, add these entries to `/etc/services`:
+
+```text /etc/services
+zebrasrv      2600/tcp    # zebra service
+zebra         2601/tcp    # zebra vty
+ripd          2602/tcp    # RIPd vty
+ripngd        2603/tcp    # RIPngd vty
+ospfd         2604/tcp    # OSPFd vty
+bgpd          2605/tcp    # BGPd vty
+ospf6d        2606/tcp    # OSPF6d vty
+ospfapi       2607/tcp    # ospfapi
+isisd         2608/tcp    # ISISd vty
+babeld        2609/tcp    # BABELd vty
+nhrpd         2610/tcp    # nhrpd vty
+pimd          2611/tcp    # PIMd vty
+ldpd          2612/tcp    # LDPd vty
+eigrpd        2613/tcp    # EIGRPd vty
+bfdd          2617/tcp    # bfdd vty
+fabricd       2618/tcp    # fabricd vty
+```
+
+<Info>
+  On FreeBSD versions newer than 2.2.8, these entries are already present in `/etc/services`. If you start a daemon with an explicit `-P <port>` flag, these entries are not needed.
+</Info>
+
+## First-boot checklist
+
+Use this checklist after a fresh install before putting FRR into production:
+
+- [ ] Enable only the daemons you need in `/etc/frr/daemons`
+- [ ] Confirm `zebra=yes` is set if any other protocol daemon is enabled
+- [ ] Set `vtysh_enable=yes` so configs are applied on service restart
+- [ ] Create `/etc/frr/frr.conf` (or per-daemon config files) with at minimum a `hostname`, `password`, and `enable password`
+- [ ] Enable `service password-encryption` to avoid storing passwords in plaintext
+- [ ] Enable IP forwarding in kernel with `net.ipv4.conf.all.forwarding=1` and `net.ipv6.conf.all.forwarding=1`
+- [ ] Run `systemctl enable frr` to start FRR automatically on boot
+- [ ] Run `systemctl start frr` and verify with `ps aux | grep frr`
+- [ ] Run `sudo vtysh -c "show version"` to confirm vtysh connects successfully

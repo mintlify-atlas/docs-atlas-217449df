@@ -1,0 +1,228 @@
+---
+title: "RIP"
+description: "Routing Information Protocol v1/v2 and RIPng for IPv6"
+---
+
+RIP (Routing Information Protocol) is a distance-vector IGP that uses hop count as its metric, with a maximum of 15 hops (16 = unreachable). It was one of the earliest standardized routing protocols and remains useful in small, simple networks where simplicity is preferred over scalability. FRR provides two daemons: `ripd` for RIPv1 (RFC 1058) and RIPv2 (RFC 2453), and `ripngd` for RIPng (RFC 2080), the IPv6 adaptation.
+
+## RIP versions
+
+<CardGroup cols={2}>
+  <Card title="RIPv1" icon="1">
+    Classful routing only. No subnet mask in updates. Broadcasts on 255.255.255.255. Largely obsolete.
+  </Card>
+  <Card title="RIPv2" icon="2">
+    Classless routing with VLSM support. Multicasts on 224.0.0.9. Supports MD5 authentication. Recommended for IPv4 deployments.
+  </Card>
+  <Card title="RIPng" icon="ipv6">
+    IPv6 adaptation of RIP. Uses link-local addresses for next-hops and multicasts on FF02::9. Configured via `ripngd`.
+  </Card>
+</CardGroup>
+
+## Starting ripd (RIPv1/v2)
+
+`ripd` uses UDP port 520. It requires `zebra` to be running first for interface information.
+
+<Steps>
+  <Step title="Enable ripd in /etc/frr/daemons">
+    ```bash
+    ripd=yes
+    ```
+  </Step>
+  <Step title="Start FRR">
+    ```bash
+    systemctl start frr
+    ```
+  </Step>
+  <Step title="Verify ripd is running">
+    ```bash
+    ps -ef | grep ripd
+    ```
+  </Step>
+</Steps>
+
+## Basic RIPv2 configuration
+
+### Enabling RIP and selecting networks
+
+```frr
+router rip
+ version 2
+ network 10.0.0.0/8
+ network eth0
+!
+```
+
+The `network` command activates RIP in two ways:
+- `network PREFIX` — enables RIP on all interfaces whose addresses fall within the prefix
+- `network IFNAME` — enables RIP on the named interface directly
+
+### Unicast neighbors
+
+For links where multicast is unavailable, configure explicit unicast neighbors:
+
+```frr
+router rip
+ version 2
+ network 10.0.0.0/8
+ neighbor 10.1.0.2
+!
+```
+
+### Passive interfaces
+
+Suppress RIP updates on an interface while still advertising its connected prefix:
+
+```frr
+router rip
+ passive-interface eth2
+!
+```
+
+### Route redistribution
+
+```frr
+router rip
+ redistribute connected
+ redistribute ospf metric 5
+ redistribute static metric 3
+ redistribute bgp metric 10
+!
+```
+
+## RIP timers
+
+RIP uses three timers that control convergence behavior:
+
+```frr
+router rip
+ timers basic 30 180 120
+!
+```
+
+The three values are:
+- **Update timer (30s)** — how often full routing table updates are sent
+- **Timeout timer (180s)** — time after which a route is considered invalid if no update is received
+- **Garbage collection timer (120s)** — time a route with metric 16 is kept before being deleted
+
+<Warning>
+Reducing RIP timers improves convergence speed but increases CPU and bandwidth load. For fast convergence in modern networks, consider OSPF or IS-IS instead.
+</Warning>
+
+## RIPv2 authentication
+
+```frr
+interface eth0
+ ip rip authentication mode md5
+ ip rip authentication key-chain RIP-KEYS
+!
+key chain RIP-KEYS
+ key 1
+  key-string mysecret
+!
+```
+
+## Default route origination
+
+```frr
+router rip
+ default-information originate
+!
+```
+
+## Complete RIPv2 configuration example
+
+```frr
+interface eth0
+ ip rip authentication mode md5
+ ip rip authentication key-chain RIP-KEYS
+!
+interface eth1
+ ip rip split-horizon poisoned-reverse
+!
+key chain RIP-KEYS
+ key 1
+  key-string mysecret
+!
+router rip
+ version 2
+ network 10.0.0.0/8
+ network eth0
+ network eth1
+ passive-interface lo
+ timers basic 30 180 120
+ redistribute connected metric 1
+ default-information originate
+!
+```
+
+## RIPng for IPv6
+
+`ripngd` implements RIPng (RFC 2080) for IPv6 networks. RIPng uses UDP port 521 and multicasts updates to FF02::9 (all RIP routers on the link).
+
+### Starting ripngd
+
+<Steps>
+  <Step title="Enable ripngd in /etc/frr/daemons">
+    ```bash
+    ripngd=yes
+    ```
+  </Step>
+  <Step title="Start FRR">
+    ```bash
+    systemctl start frr
+    ```
+  </Step>
+</Steps>
+
+### Basic RIPng configuration
+
+```frr
+router ripng
+ network eth0
+ network eth1
+ redistribute connected
+ redistribute static
+!
+```
+
+RIPng activates on specific interfaces rather than address prefixes. There is no authentication built into RIPng — use IPsec if authentication is required.
+
+### RIPng interface settings
+
+```frr
+interface eth0
+ ipv6 rip split-horizon
+ ipv6 rip split-horizon poisoned-reverse
+!
+```
+
+## Show commands
+
+<Tabs>
+  <Tab title="RIPv2">
+    ```frr
+    ! RIP routing table
+    show ip rip
+
+    ! RIP status and timers
+    show ip rip status
+
+    ! Interface information
+    show ip rip interface
+    ```
+  </Tab>
+  <Tab title="RIPng">
+    ```frr
+    ! RIPng routing table
+    show ipv6 ripng
+
+    ! RIPng status
+    show ipv6 ripng status
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+RIP's 15-hop limit makes it unsuitable for networks with more than 15 routers in any path. For larger networks, use OSPF (OSPFv2 or OSPFv3) or IS-IS.
+</Note>

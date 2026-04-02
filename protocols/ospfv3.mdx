@@ -1,0 +1,191 @@
+---
+title: "OSPFv3"
+description: "Open Shortest Path First v3 for IPv6 networks"
+---
+
+OSPFv3 is the IPv6 adaptation of the OSPF link-state routing protocol, described in RFC 2740. The `ospf6d` daemon in FRR implements OSPFv3, providing the same topology-based SPF computation and area hierarchy as OSPFv2 but redesigned to support IPv6 addressing natively. OSPFv3 runs directly over IPv6, uses link-local addresses for neighbor communication, and separates address information from topology information.
+
+## Key differences from OSPFv2
+
+- Runs over IPv6 (uses link-local addresses for all adjacencies)
+- Protocol-independent topology LSAs — address prefixes are carried in separate LSAs
+- Supports multiple address families per link
+- Authentication is handled by IPv6 IPsec rather than built-in OSPF authentication fields
+- Interfaces are identified by interface index rather than IP address
+
+## Starting ospf6d
+
+`ospf6d` requires `zebra` to be running before it is started.
+
+<Steps>
+  <Step title="Enable ospf6d in /etc/frr/daemons">
+    ```bash
+    ospf6d=yes
+    ```
+  </Step>
+  <Step title="Start FRR">
+    ```bash
+    systemctl start frr
+    ```
+  </Step>
+  <Step title="Verify ospf6d is running">
+    ```bash
+    ps -ef | grep ospf6d
+    ```
+  </Step>
+</Steps>
+
+## Basic OSPFv3 configuration
+
+### Router configuration
+
+```frr
+router ospf6
+ router-id 192.0.2.1
+ timers throttle spf 200 400 10000
+!
+```
+
+The `router-id` is a 32-bit value in dotted-decimal notation, even though OSPFv3 is used for IPv6. It uniquely identifies the router in the OSPF domain.
+
+### Binding interfaces to areas
+
+Interfaces are activated under the `router ospf6` node:
+
+```frr
+router ospf6
+ router-id 192.0.2.1
+ interface eth0 area 0.0.0.0
+ interface eth1 area 0.0.0.1
+!
+```
+
+Alternatively, you can configure the instance ID on the interface itself:
+
+```frr
+interface eth0
+ ipv6 ospf6 instance-id 0
+!
+```
+
+## Interface-level settings
+
+OSPFv3 interface parameters are configured under the interface node using `ipv6 ospf6` commands:
+
+```frr
+interface eth0
+ ipv6 ospf6 cost 10
+ ipv6 ospf6 hello-interval 5
+ ipv6 ospf6 dead-interval 20
+ ipv6 ospf6 retransmit-interval 5
+ ipv6 ospf6 priority 100
+ ipv6 ospf6 transmit-delay 1
+ ipv6 ospf6 network point-to-point
+!
+```
+
+<CardGroup cols={2}>
+  <Card title="ipv6 ospf6 cost" icon="calculator">
+    Link cost used in SPF computation. Default depends on interface bandwidth and the `auto-cost reference-bandwidth` setting.
+  </Card>
+  <Card title="ipv6 ospf6 hello-interval" icon="clock">
+    Interval in seconds between Hello packets. Must match on both ends. Default is 10s.
+  </Card>
+  <Card title="ipv6 ospf6 dead-interval" icon="timer-off">
+    Seconds before declaring a neighbor dead. Must match. Default is 40s.
+  </Card>
+  <Card title="ipv6 ospf6 priority" icon="arrow-up-right">
+    Influences DR/BDR election. Set to 0 to prevent DR election. Default is 1.
+  </Card>
+</CardGroup>
+
+### Auto-cost reference bandwidth
+
+Adjust the reference bandwidth to match your network's link speeds:
+
+```frr
+router ospf6
+ auto-cost reference-bandwidth 10000
+!
+```
+
+<Warning>
+The `auto-cost reference-bandwidth` must be consistent across all routers in the OSPF domain. Mismatched values will lead to incorrect SPF computation.
+</Warning>
+
+## SPF throttle timers
+
+```frr
+router ospf6
+ timers throttle spf 200 400 10000
+!
+```
+
+The three values are: initial delay (ms), initial holdtime (ms), and maximum holdtime (ms). In this example, there is at least 200 ms between a topology event and the SPF calculation. Consecutive SPF runs are separated by 400 ms to 10 seconds.
+
+## Redistribution into OSPFv3
+
+Routes from other protocols can be redistributed into OSPFv3:
+
+```frr
+router ospf6
+ redistribute static
+ redistribute connected
+ redistribute ripng
+!
+```
+
+## Complete OSPFv3 configuration example
+
+```frr
+interface lo
+ ipv6 ospf6 cost 1
+!
+interface eth0
+ ipv6 ospf6 cost 10
+ ipv6 ospf6 hello-interval 5
+ ipv6 ospf6 dead-interval 20
+ ipv6 ospf6 instance-id 0
+!
+interface eth1
+ ipv6 ospf6 cost 100
+ ipv6 ospf6 instance-id 0
+!
+router ospf6
+ router-id 192.0.2.1
+ auto-cost reference-bandwidth 10000
+ timers throttle spf 200 400 10000
+ area 0.0.0.0 range 2001:db8::/32
+ interface eth0 area 0.0.0.0
+ interface eth1 area 0.0.0.1
+!
+```
+
+## Show commands
+
+```frr
+! Overview: router-id, OSPF instance state
+show ipv6 ospf6
+
+! Neighbor table with states and DR/BDR info
+show ipv6 ospf6 neighbor
+
+! Interface configuration and costs
+show ipv6 ospf6 interface
+
+! Link-state database summary
+show ipv6 ospf6 database
+
+! Internal OSPFv3 routing table
+show ipv6 route ospf6
+
+! Redistribution state between zebra and OSPFv3
+show ipv6 ospf6 zebra
+
+! Request list for a specific neighbor
+show ipv6 ospf6 request-list 192.0.2.2
+```
+
+<Note>
+OSPFv3 area support (stub, NSSA) is not yet fully implemented in FRR's `ospf6d`. Use OSPFv2 (`ospfd`) for environments requiring full area type support on IPv4 networks.
+</Note>

@@ -1,0 +1,264 @@
+---
+title: "VRF Support"
+description: "Virtual Routing and Forwarding — network segmentation and multi-tenant routing"
+---
+
+FRR supports VRF (Virtual Routing and Forwarding), which provides a way to separate networking contexts on a single machine. Each VRF has its own routing table, its own set of interfaces, and its own instance of the routing daemons' state. This makes it possible to run multiple independent routing domains — for example, one per enterprise tenant — without requiring separate physical hosts or separate daemon processes.
+
+## Why VRFs
+
+VRFs are commonly used in scenarios such as:
+
+- **Multi-tenant environments** — isolate routing domains per customer or per enterprise on shared infrastructure.
+- **Network segmentation** — separate management, production, and out-of-band networks on the same router.
+- **L3VPNs** — distribute VRF routes via BGP MPLS L3VPN (RFC 4364 / RFC 4659).
+- **Testing and staging** — run a staging routing context alongside production without interference.
+
+If no VRF is explicitly configured, FRR uses the **Default VRF** for all operations.
+
+## Kernel requirements
+
+<Warning>
+  Linux VRF support requires kernel version **4.8 or later**. Earlier kernels do not have the VRF master device support that FRR relies on.
+</Warning>
+
+FRR supports two VRF backend modes in Zebra:
+
+| Backend | Description |
+|---|---|
+| **Linux VRF** (default) | Uses Linux VRF master devices and per-VRF routing tables, as documented at `https://www.kernel.org/doc/Documentation/networking/vrf.txt`. The routing table associated with each VRF is a Linux table identifier in the same network namespace where Zebra started. |
+| **Linux network namespaces** (`-n` flag) | Maps each Linux network namespace to a Zebra VRF. Each VRF gets the full routing table of its namespace. Matches OpenStack Network Namespace and OpenFastPath deployments. |
+
+Start Zebra with `-n` (or `--vrfwnetns`) to enable the network namespace backend:
+
+```bash
+zebra -n
+```
+
+## Creating VRFs in FRR
+
+VRFs are configured from Zebra's configuration mode:
+
+```frr
+vrf blue
+ !
+vrf red
+ !
+```
+
+Entering `vrf VRFNAME` opens VRF configuration mode. Zebra itself does not create the Linux VRF device — the network administrator is expected to create it at the OS level (for example with `ip link add blue type vrf table 10`). The FRR configuration provides clarity about the intended policy.
+
+When using the network namespace backend, the `netns` command maps a namespace to the VRF:
+
+```frr
+vrf blue
+ netns /var/run/netns/blue
+!
+```
+
+## Assigning interfaces to VRFs
+
+Interfaces are placed into a VRF from Zebra interface configuration:
+
+```frr
+interface eth1 vrf blue
+ ip address 10.1.0.1/24
+!
+interface eth2 vrf red
+ ip address 10.2.0.1/24
+!
+```
+
+The `interface IFNAME vrf VRF` command enters interface configuration mode for an interface that belongs to the named VRF.
+
+## VRF-aware routing protocol configuration
+
+### BGP
+
+Each BGP autonomous system instance can be bound to a VRF. Multiple AS instances can run simultaneously, each in its own VRF:
+
+```frr
+router bgp 65001 vrf blue
+ bgp router-id 10.1.0.1
+ neighbor 10.1.0.2 remote-as 65002
+ neighbor 10.1.0.2 activate
+!
+router bgp 65001 vrf red
+ bgp router-id 10.2.0.1
+ neighbor 10.2.0.2 remote-as 65003
+ neighbor 10.2.0.2 activate
+!
+```
+
+When `vrf VRFNAME` is omitted, the BGP process belongs to the default VRF.
+
+<Note>
+  Each VRF used for a BGP instance must be unique across all instances with the same purpose. Two different autonomous systems cannot share the same VRF, though the same AS number can be reused across different VRFs.
+</Note>
+
+### OSPF
+
+OSPF instances can be scoped to a VRF by specifying the VRF name:
+
+```frr
+router ospf vrf blue
+ network 10.1.0.0/24 area 0
+!
+```
+
+## show vrf commands
+
+### View all VRFs
+
+```frr
+show vrf
+```
+
+Lists all known VRFs and their status.
+
+### View the routing table for a VRF
+
+```frr
+show ip route vrf blue
+```
+
+Displays the routing table associated with the named VRF. In Linux VRF mode this shows the table corresponding to the VRF's table ID. In network namespace mode this shows the default routing table of the VRF's namespace.
+
+```frr
+show ip route vrf blue table TABLENO
+```
+
+Available only in network namespace mode. Dumps a specific routing table within the named VRF's namespace.
+
+### View BGP table for a VRF
+
+```frr
+show ip bgp vrf blue
+show ip bgp vrf blue summary
+```
+
+### View all interfaces in a VRF
+
+```frr
+show interface vrf blue
+```
+
+## Route leaking between VRFs
+
+BGP supports leaking (copying) routes between VRFs. Routes exported from one unicast VRF's RIB can be imported into another VRF's RIB, either directly or via the VPN SAFI RIB of the default VRF.
+
+### Required parameters for VPN-based leaking
+
+Routes exported from a unicast VRF to the VPN RIB must carry:
+
+- An **RD** (Route Distinguisher) — makes the route unique in the VPN RIB.
+- An **RTLIST** (Route-target List) — used to select which VRFs import the route.
+
+Routes imported from the VPN RIB to a unicast VRF are selected by matching at least one route-target from their RTLIST against the configured import RTLIST.
+
+### Configuration commands (within address-family context)
+
+```frr
+router bgp 65000
+ address-family ipv4 unicast vrf blue
+  rd vpn export 65000:1
+  rt vpn export 65000:100
+  rt vpn import 65000:200
+  label vpn export auto
+  import vpn
+  export vpn
+ exit-address-family
+```
+
+| Command | Description |
+|---|---|
+| `rd vpn export AS:NN\|IP:nn` | Set the route distinguisher added to routes exported from this VRF. |
+| `rt vpn import\|export\|both RTLIST` | Set the route-target list for import selection or export tagging. |
+| `label vpn export (0..1048575)\|auto` | Attach an MPLS label to exported routes. `auto` assigns from Zebra's label pool. |
+| `nexthop vpn export A.B.C.D\|X:X::X:X` | Override the next-hop for exported routes. Defaults to `0.0.0.0` (self). |
+| `route-map vpn import\|export MAP` | Apply a route map to imported or exported routes. |
+| `import vpn` / `export vpn` | Enable import or export of routes between this VRF and VPN. |
+
+### Shortcut VRF-to-VRF leaking
+
+A simplified shortcut syntax leaks routes directly between two unicast VRFs without explicitly specifying RD and RT values. The values are auto-derived:
+
+```frr
+router bgp 65000
+ address-family ipv4 unicast vrf blue
+  import vrf red
+ exit-address-family
+```
+
+This command causes routes from VRF `red` to be leaked into VRF `blue` using the default VPN RIB as an intermediary. The shortcut syntax is not compatible with explicit `import vpn` / `export vpn` statements for the same VRFs.
+
+To remove the leak:
+
+```frr
+no import vrf red
+```
+
+### Full leaking example
+
+The following example leaks routes between a customer VRF (`blue`) and a provider VRF (`red`):
+
+```frr
+router bgp 65000
+ !
+ address-family ipv4 unicast vrf blue
+  rd vpn export 65000:10
+  rt vpn export 65000:100
+  rt vpn import 65000:200
+  label vpn export auto
+  route-map vpn export LEAK-OUT
+  import vpn
+  export vpn
+ exit-address-family
+ !
+ address-family ipv4 unicast vrf red
+  rd vpn export 65000:20
+  rt vpn export 65000:200
+  rt vpn import 65000:100
+  label vpn export auto
+  route-map vpn import LEAK-IN
+  import vpn
+  export vpn
+ exit-address-family
+```
+
+## Default VRF naming
+
+When Zebra starts without `-n`, the default VRF is named `Default`. In network namespace mode, Zebra discovers namespaces from `/var/run/netns/`. To name the default VRF namespace, bind the current network namespace to a file:
+
+```bash
+touch /var/run/netns/vrf0
+mount --bind /proc/self/ns/net /var/run/netns/vrf0
+```
+
+At startup, FRR detects the bind mount, recognises it as the default namespace, and renames the default VRF to `vrf0`.
+
+You can also set a compile-time default VRF name:
+
+```bash
+./configure --with-defaultvrfname=global
+```
+
+## Internal VRF structure
+
+The `struct vrf` in `lib/vrf.h` tracks each VRF's state:
+
+| Field | Description |
+|---|---|
+| `vrf_id` | Numeric identifier, unique per VRF. |
+| `name` | VRF name, up to 36 characters (`VRF_NAMSIZ`). |
+| `status` | Bitmask: `VRF_ACTIVE` (up in kernel), `VRF_CONFIGURED` (has FRR configuration). |
+| `ifaces_by_name` / `ifaces_by_index` | Interfaces belonging to this VRF. |
+| `data.l.table_id` | The Linux routing table ID associated with this VRF. |
+
+VRFs support two backends selected at runtime:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `VRF_BACKEND_VRF_LITE` | `0` | Linux VRF device backend (default). |
+| `VRF_BACKEND_NETNS` | `1` | Linux network namespace backend (`-n` flag). |
+| `VRF_BACKEND_UNKNOWN` | `2` | Backend not yet determined. |

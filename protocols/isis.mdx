@@ -1,0 +1,235 @@
+---
+title: "IS-IS"
+description: "Intermediate System to Intermediate System link-state routing protocol"
+---
+
+IS-IS (Intermediate System to Intermediate System) is a link-state IGP originally developed for the OSI protocol suite and later extended to support IP routing (RFC 1195) and IPv6 (RFC 5308). Like OSPF, IS-IS floods topology information and runs Dijkstra's SPF algorithm on each router, producing a loop-free shortest-path tree. IS-IS is widely used in large ISP and carrier backbone networks because of its scalability, fast convergence, and flexibility.
+
+## Key concepts
+
+IS-IS uses a two-level hierarchy rather than OSPF's area model:
+
+<CardGroup cols={3}>
+  <Card title="Level 1 (L1)" icon="building">
+    Intra-area routing. L1 routers only know about the topology within their area. Traffic destined outside the area is forwarded toward the nearest L1/L2 router.
+  </Card>
+  <Card title="Level 2 (L2)" icon="globe">
+    Inter-area (backbone) routing. L2 routers form the backbone that connects areas. They know the topology of the entire backbone.
+  </Card>
+  <Card title="Level 1-2 (L1L2)" icon="layers">
+    Acts as both an intra-area and backbone router. Redistributes summary prefixes between levels. Equivalent to OSPF's Area Border Router (ABR).
+  </Card>
+</CardGroup>
+
+Routers are identified by a **NET (Network Entity Title)** — an ISO-format address that encodes the area ID, system ID, and a selector byte (always 00).
+
+## Starting isisd
+
+`isisd` requires `zebra` to be running first so it can acquire interface information.
+
+<Steps>
+  <Step title="Enable isisd in /etc/frr/daemons">
+    ```bash
+    isisd=yes
+    ```
+  </Step>
+  <Step title="Start FRR">
+    ```bash
+    systemctl start frr
+    ```
+  </Step>
+  <Step title="Verify isisd is running">
+    ```bash
+    ps -ef | grep isisd
+    ```
+  </Step>
+</Steps>
+
+## Basic IS-IS configuration
+
+### IS-IS process and NET
+
+Start by enabling the IS-IS process and setting the NET address. The NET format is:
+
+```
+AFI . Area-ID . System-ID . SEL
+49.0001.0000.0000.0001.00
+│    │         │           └─ Selector (always 00)
+│    │         └─────────── System ID (6 bytes, unique per router)
+│    └───────────────────── Area ID
+└──────────────────────────── AFI (49 = private)
+```
+
+```frr
+router isis CORE
+ net 49.0001.0000.0000.0001.00
+ is-type level-2-only
+ metric-style wide
+ log-adjacency-changes
+!
+```
+
+The process name (`CORE` in this example) is an arbitrary label used to link interface configuration to the IS-IS process.
+
+### Interface configuration
+
+Activate IS-IS on an interface and associate it with the named process:
+
+```frr
+interface eth0
+ ip router isis CORE
+ ipv6 router isis CORE
+ isis circuit-type level-2-only
+ isis metric 10
+ isis hello-interval 3
+ isis hello-multiplier 3
+!
+```
+
+For IPv6, use `ipv6 router isis WORD` to enable IS-IS IPv6 routing on the interface.
+
+## Level settings
+
+Set the router level under the IS-IS process:
+
+```frr
+router isis CORE
+ net 49.0001.0000.0000.0001.00
+ is-type level-1-2
+!
+```
+
+Choices are:
+- `level-1` — station (leaf) router, intra-area only
+- `level-1-2` — area border router (default)
+- `level-2-only` — backbone router only
+
+Per-interface circuit type can override the router-wide level:
+
+```frr
+interface eth0
+ isis circuit-type level-2-only
+!
+```
+
+## Metric style
+
+IS-IS originally used narrow (6-bit) metrics. Wide metrics (24-bit for interfaces, 32-bit for routes) are required for traffic engineering and large topologies:
+
+<Tabs>
+  <Tab title="Wide metrics (recommended)">
+    ```frr
+    router isis CORE
+     metric-style wide
+    !
+    ```
+  </Tab>
+  <Tab title="Narrow metrics (legacy)">
+    ```frr
+    router isis CORE
+     metric-style narrow
+    !
+    ```
+  </Tab>
+  <Tab title="Transition mode">
+    ```frr
+    router isis CORE
+     metric-style transition
+    !
+    ```
+    Sends and accepts both styles during a migration window.
+  </Tab>
+</Tabs>
+
+## IS-IS timers
+
+```frr
+router isis CORE
+ ! LSP generation interval: minimum time between regenerating the same LSP
+ lsp-gen-interval 2
+
+ ! LSP refresh interval: how often to refresh LSPs in the LSDB
+ lsp-refresh-interval 900
+
+ ! Maximum LSP lifetime before it is considered expired
+ max-lsp-lifetime 1200
+
+ ! SPF interval: minimum time between consecutive SPF runs
+ spf-interval 10
+!
+```
+
+These can be specified per-level using `level-1` or `level-2` qualifiers.
+
+## Authentication
+
+IS-IS supports per-area and per-domain authentication:
+
+```frr
+router isis CORE
+ area-password md5 myareapassword
+ domain-password md5 mydomainpassword
+!
+```
+
+## Complete IS-IS configuration example
+
+```frr
+interface lo
+ ip router isis CORE
+ ipv6 router isis CORE
+ isis passive
+!
+interface eth0
+ ip router isis CORE
+ ipv6 router isis CORE
+ isis circuit-type level-2-only
+ isis metric 10
+ isis hello-interval 3
+ isis hello-multiplier 3
+!
+interface eth1
+ ip router isis CORE
+ ipv6 router isis CORE
+ isis circuit-type level-1-2
+ isis metric 100
+!
+router isis CORE
+ net 49.0001.0000.0000.0001.00
+ is-type level-2-only
+ metric-style wide
+ log-adjacency-changes
+ lsp-gen-interval 2
+ spf-interval 10
+ hostname dynamic
+!
+```
+
+## Show commands
+
+```frr
+! IS-IS summary: adjacencies, LSPs, SPF state
+show isis summary
+
+! Adjacency table
+show isis neighbor
+
+! IS-IS database (LSDB) summary
+show isis database
+
+! Detailed LSDB content
+show isis database detail
+
+! IS-IS topology
+show isis topology
+
+! IS-IS route table
+show isis route
+
+! Per-interface IS-IS state
+show isis interface
+```
+
+<Tip>
+Enable `hostname dynamic` so that IS-IS adjacency and database output shows human-readable hostnames rather than raw system IDs.
+</Tip>

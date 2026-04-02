@@ -1,0 +1,160 @@
+---
+title: "Architecture"
+description: "FRR's multi-daemon architecture, the zebra routing engine, and inter-daemon communication"
+---
+
+FRR is a suite of routing daemons that collectively implement a full open-source routing stack. Understanding the overall design is essential before contributing code.
+
+## Multi-daemon design
+
+FRR runs as a collection of independent Unix processes — one per routing protocol — rather than a single monolithic binary. Each protocol daemon handles only its own protocol logic:
+
+| Daemon | Protocol |
+|---|---|
+| `zebra` | Core routing manager and kernel interface |
+| `bgpd` | BGP (Border Gateway Protocol) |
+| `ospfd` | OSPFv2 |
+| `ospf6d` | OSPFv3 (OSPF for IPv6) |
+| `isisd` | IS-IS |
+| `ripd` | RIPv2 |
+| `ripngd` | RIPng (RIP for IPv6) |
+| `pimd` | PIM-SM multicast |
+| `ldpd` | LDP (Label Distribution Protocol) |
+| `nhrpd` | NHRP (Next Hop Resolution Protocol) |
+| `eigrpd` | EIGRP |
+| `babeld` | Babel |
+| `watchfrr` | Watchdog — monitors and restarts other daemons |
+| `vtysh` | Combined management shell — proxies commands to all daemons |
+
+This design means a crash in one protocol daemon does not affect others. `watchfrr` monitors all daemons and can restart individual ones if they fail.
+
+## Zebra: the central routing manager
+
+`zebra` is the hub of the FRR architecture. All protocol daemons connect to zebra, which performs two roles:
+
+1. **Routing Information Base (RIB) management**: zebra maintains the master routing table. Protocol daemons submit routes to zebra, which arbitrates between them based on administrative distance and installs the best routes into the kernel.
+
+2. **Kernel interface**: zebra is the only daemon that communicates directly with the Linux/BSD kernel via Netlink (Linux) or routing sockets (BSD). Protocol daemons never write to the kernel directly.
+
+```
+bgpd ──┐
+ospfd ─┤
+isisd ─┤── zebra ── Linux kernel (Netlink / routing sockets)
+ripd  ─┤     │
+ldpd  ─┘     └── FIB (Forwarding Information Base)
+```
+
+## Zserv: inter-daemon communication
+
+Protocol daemons communicate with zebra using the **Zserv** protocol, which runs over Unix domain sockets. The socket is typically located at `/var/run/frr/zserv.api`.
+
+Each protocol daemon acts as a Zserv client. Common Zserv operations include:
+
+- **Route redistribution**: daemons send routes to zebra (`ZEBRA_ROUTE_ADD`, `ZEBRA_ROUTE_DELETE`).
+- **Interface notifications**: zebra sends interface up/down events to all connected clients.
+- **Next-hop tracking**: daemons register interest in next-hop reachability; zebra notifies them of changes (used by BGP's next-hop tracking feature).
+- **Label management**: daemons request MPLS labels from zebra's label manager.
+
+The Zserv protocol is defined in `lib/zclient.h` and `lib/zclient.c`. The client-side API is encapsulated in `struct zclient`.
+
+## Thread-based event model
+
+FRR daemons are single-threaded by default and use a cooperative event loop rather than preemptive threads. The event system is implemented in `lib/thread.h` and `lib/thread.c`.
+
+The central type is `struct thread_master`, which owns a file-descriptor set and a list of pending events. Each daemon creates one master and passes it to `frr_run()` defined in `lib/libfrr.h`:
+
+```c
+struct thread_master *master;
+master = thread_master_create(NULL);
+frr_run(master);  /* blocks until daemon exits */
+```
+
+Events are scheduled with functions like:
+
+```c
+thread_add_read(master, callback_fn, arg, fd, &t);   /* I/O ready */
+thread_add_timer(master, callback_fn, arg, secs, &t); /* timer */
+thread_add_event(master, callback_fn, arg, 0, &t);    /* immediate */
+```
+
+Each callback receives a `struct thread *` and must return an `int`. Long-running work is broken into multiple events to avoid blocking the loop.
+
+## The lib/ shared library
+
+All daemons link against `libfrr`, which lives in `lib/`. This shared library provides:
+
+| Module | Description |
+|---|---|
+| `lib/thread.{c,h}` | Event loop and thread (task) management |
+| `lib/command.{c,h}` | CLI command parser and VTY infrastructure |
+| `lib/vty.{c,h}` | Virtual terminal multiplexer |
+| `lib/zclient.{c,h}` | Zserv client library |
+| `lib/prefix.{c,h}` | IP prefix handling (`struct prefix`, `struct prefix_ipv4`, etc.) |
+| `lib/table.{c,h}` | Radix trie routing table (`struct route_table`) |
+| `lib/memory.{c,h}` | Memory allocation with type tracking |
+| `lib/log.{c,h}` | Logging subsystem |
+| `lib/hook.{c,h}` | Typed subscribable hook points |
+| `lib/northbound.{c,h}` | YANG northbound API |
+| `lib/libfrr.{c,h}` | Daemon lifecycle management (`frr_init`, `frr_run`) |
+
+## Memory management (MTYPE macros)
+
+FRR uses a custom memory allocation system built on top of `malloc`/`free` that tracks allocation types for debugging and leak detection. Every allocation site declares a type:
+
+```c
+/* In a header: */
+DECLARE_MTYPE(BGP_PEER)
+
+/* In a .c file: */
+DEFINE_MTYPE_STATIC(BGPD, BGP_PEER, "BGP peer")
+
+/* Usage: */
+struct peer *p = XMALLOC(MTYPE_BGP_PEER, sizeof(struct peer));
+XFREE(MTYPE_BGP_PEER, p);
+```
+
+The `MTYPE_` namespace lets FRR track memory usage per type, which is visible via `show memory` in vtysh and is essential for catching memory leaks during development.
+
+## The VTY layer
+
+The VTY (Virtual TeleTYpe) layer provides the user-facing CLI. It is defined in `lib/vty.h` and `lib/command.h`.
+
+Key concepts:
+
+- **VTY nodes** (`enum node_type` in `lib/command.h`): each CLI mode (e.g., `CONFIG_NODE`, `BGP_NODE`, `INTERFACE_NODE`) is a separate node. Commands are registered per node.
+- **DEFUN macro**: defines a CLI command handler. See [CLI Development](/developer/cli-development) for full details.
+- **install_element()**: registers a `cmd_element` into a specific node's command graph.
+- **vtysh**: a separate binary that proxies commands to all running daemons via their individual Unix VTY sockets.
+
+The VTY layer supports both interactive terminal access (Telnet or Unix socket) and batch configuration loading from files.
+
+## YANG / Northbound API
+
+FRR has a northbound API built on YANG data models. Each subsystem that supports the northbound API defines a YANG schema (`.yang` files under the source tree) and implements callbacks in `struct frr_yang_module_info`.
+
+The northbound layer enables:
+
+- **Transactional configuration**: changes are validated and applied atomically.
+- **NETCONF / RESTCONF**: external management systems can read and modify FRR state via standard protocols.
+- **Candidate configuration**: changes can be staged before being committed.
+
+The northbound infrastructure is implemented in `lib/northbound.{c,h}` and `lib/northbound_cli.{c,h}`. New subsystems should implement the northbound callbacks rather than writing configuration handlers that bypass the transactional layer.
+
+## frr_pthread: optional multi-threading
+
+While the main event loop is single-threaded, some subsystems use `frr_pthread` (defined in `lib/frr_pthread.h`) to run work on background POSIX threads. Examples include:
+
+- The BGP I/O thread (`bgpd/bgp_io.c`): handles socket reads/writes on a dedicated thread to minimize latency.
+- The BGP keepalive thread: manages keepalive timers independently.
+
+`frr_pthread` wraps `pthread_create` with FRR's thread naming and signal handling conventions. Work items are passed between the main thread and `frr_pthread` threads using the standard event system, ensuring that shared data structures are accessed in a controlled manner.
+
+## Daemon startup lifecycle
+
+Every FRR daemon follows the same startup sequence, managed by `lib/libfrr.c`:
+
+1. **`frr_preinit()`** — parse command-line arguments, set up logging.
+2. **`frr_init()`** — initialize the event loop, VTY, memory subsystem, and northbound layer.
+3. Daemon-specific initialization (routing table setup, socket binding, etc.).
+4. **`frr_run()`** — enter the event loop. This call blocks until the daemon exits.
+5. **`frr_fini()`** — called on shutdown; triggers `KOOH`-type cleanup hooks in reverse priority order.

@@ -1,0 +1,167 @@
+---
+title: "Introduction"
+description: "What FRRouting is, how it works, and what protocols it supports"
+---
+
+FRRouting (FRR) is a free, open-source routing software suite that implements and manages various IPv4 and IPv6 routing protocols. It runs on nearly all distributions of Linux and BSD as well as Solaris, and supports all modern CPU architectures. FRR is a fork of [Quagga](http://www.quagga.net/) and is distributed under the GNU General Public License.
+
+A system with FRR installed acts as a dedicated router. FRR exchanges routing information with other routers using standard routing protocols, then uses that information to update the kernel routing table so that packets reach the right destination. You can dynamically change the configuration and view routing table information through the FRR terminal interface.
+
+<Note>
+  In the SONiC context, FRR serves as the routing protocol stack that interacts with the SONiC switch abstraction layer. SONiC uses FRR's daemons to handle BGP peering, OSPF convergence, and other routing functions, with route updates propagated through the SONiC database to the underlying ASIC.
+</Note>
+
+## System architecture
+
+Unlike traditional routing software that bundles all protocol logic into a single monolithic process, FRR takes a multi-daemon approach. Each major routing protocol runs as its own independent daemon. A central broker daemon — **Zebra** — sits between the protocol daemons and the operating system kernel.
+
+```
++----+  +----+  +-----+  +----+  +----+  +----+  +-----+
+|bgpd|  |ripd|  |ospfd|  |ldpd|  |pbrd|  |pimd|  |.....|
++----+  +----+  +-----+  +----+  +----+  +----+  +-----+
+     |       |        |       |       |       |        |
++----v-------v--------v-------v-------v-------v--------v--+
+|                                                         |
+|                          Zebra                          |
+|                                                         |
++---------------------------------------------------------+
+        |                    |                   |
++-------v------+   +---------v--------+   +------v------+
+|              |   |                  |   |             |
+| *NIX Kernel  |   | Remote dataplane |   | ........... |
+|              |   |                  |   |             |
++--------------+   +------------------+   +-------------+
+```
+
+This multi-process architecture provides:
+
+- **High resiliency** — an error, crash, or exploit in one protocol daemon generally does not affect the others.
+- **Modularity** — new protocols can be implemented as new daemons and tied into the suite without modifying existing code.
+- **Extensibility** — the design makes it straightforward to add new protocol daemons to FRR.
+
+## Zebra: the routing manager
+
+Zebra is the core daemon of FRR. It acts as a broker between the individual protocol daemons and the OS kernel's routing table. Protocol daemons submit routes to Zebra, which then installs them into the kernel. Zebra also handles:
+
+- Interface management (flags, addresses)
+- Static route configuration
+- Redistribution of routes between protocols
+- Kernel Netlink socket communication on Linux (via `CONFIG_NETLINK` and `CONFIG_RTNETLINK`)
+- VRF (Virtual Routing and Forwarding) support on Linux kernels ≥ 4.8
+- MPLS forwarding on Linux kernels ≥ 4.5
+
+<Tip>
+  You almost always need Zebra running. It can be disabled (`--disable-zebra`) only in specialized scenarios such as running `bgpd` as a standalone BGP route server.
+</Tip>
+
+## vtysh: the unified CLI
+
+All FRR daemons can be managed through a single integrated shell called **vtysh**. Rather than requiring you to connect to each daemon's individual VTY port, vtysh connects to all running daemons via UNIX domain sockets and proxies your commands to the appropriate daemon.
+
+vtysh also supports an **integrated configuration mode**, allowing you to manage all daemons from a single `frr.conf` file instead of maintaining a separate config file for each daemon (`zebra.conf`, `bgpd.conf`, etc.).
+
+```bash
+# Launch the unified shell
+vtysh
+
+# Inside vtysh — commands are routed to the correct daemon automatically
+Router# show ip bgp summary
+Router# show ip ospf neighbor
+Router# configure terminal
+Router(config)# router bgp 65001
+```
+
+## Supported protocols
+
+<CardGroup cols={2}>
+  <Card title="BGP" icon="globe">
+    Border Gateway Protocol (BGP-4). Supports route reflection, confederations,
+    communities, multiprotocol extensions (IPv6, VPN, EVPN, Flowspec), and VNC.
+    Daemon: `bgpd`.
+  </Card>
+  <Card title="OSPFv2" icon="network">
+    Open Shortest Path First for IPv4 (RFC 2328). Supports Opaque LSA, NSSA,
+    Router Information (RFC 4970), Traffic Engineering, and Segment Routing on
+    Linux ≥ 4.12. Daemon: `ospfd`.
+  </Card>
+  <Card title="OSPFv3" icon="network">
+    Open Shortest Path First for IPv6 (RFC 2740). Fully supported on Linux,
+    OpenBSD, FreeBSD, NetBSD, and Solaris. Daemon: `ospf6d`.
+  </Card>
+  <Card title="RIPv1 / RIPv2" icon="arrow-left-right">
+    Routing Information Protocol versions 1 and 2 (RFC 1058, RFC 2453),
+    including MD5 authentication (RFC 2082). Daemon: `ripd`.
+  </Card>
+  <Card title="RIPng" icon="arrow-left-right">
+    RIP Next Generation — the IPv6 variant of RIP (RFC 2080).
+    Daemon: `ripngd`.
+  </Card>
+  <Card title="IS-IS" icon="share-2">
+    Intermediate System to Intermediate System link-state routing. Supports
+    Traffic Engineering extensions (RFC 5305) and topology generation.
+    Daemon: `isisd`.
+  </Card>
+  <Card title="PIM-SM / MSDP" icon="radio">
+    Protocol Independent Multicast — Sparse Mode, supporting both SSM (Source
+    Specific Multicast) and ASM (Any Source Multicast) on Linux.
+    Daemon: `pimd`.
+  </Card>
+  <Card title="LDP" icon="tag">
+    Label Distribution Protocol (RFC 5036) for MPLS. Requires Linux kernel ≥
+    4.5 or OpenBSD. Supports typed wildcard FEC and GTSM.
+    Daemon: `ldpd`.
+  </Card>
+  <Card title="BFD" icon="activity">
+    Bidirectional Forwarding Detection (RFC 5880 / 5881 / 5883) for fast
+    failure detection on single-hop and multi-hop paths.
+    Daemon: `bfdd`.
+  </Card>
+  <Card title="Babel" icon="waypoints">
+    The Babel routing protocol — a loop-avoiding distance-vector protocol
+    suitable for both wired and wireless networks. Daemon: `babeld`.
+  </Card>
+  <Card title="PBR" icon="filter">
+    Policy Based Routing daemon. Allows traffic to be forwarded based on policy
+    rules rather than only the destination address. Linux only. Daemon: `pbrd`.
+  </Card>
+  <Card title="OpenFabric" icon="layers">
+    A simplified IS-IS variant optimized for data center fabric deployments.
+    Daemon: `fabricd`.
+  </Card>
+  <Card title="EIGRP (alpha)" icon="flask-conical">
+    Enhanced Interior Gateway Routing Protocol — currently in alpha status.
+    Daemon: `eigrpd`.
+  </Card>
+  <Card title="NHRP (alpha)" icon="flask-conical">
+    Next Hop Resolution Protocol — currently in alpha status. Linux only.
+    Daemon: `nhrpd`.
+  </Card>
+</CardGroup>
+
+## Supported platforms
+
+FRR supports the following operating systems:
+
+| Platform | Status |
+|----------|--------|
+| GNU/Linux | Fully supported; primary development platform |
+| FreeBSD | Fully supported |
+| NetBSD | Fully supported |
+| OpenBSD | Fully supported |
+| Solaris | Best-effort support |
+| MacOS | Best-effort support |
+
+Tested compilers include **GCC**, **Clang (LLVM)**, and **Intel ICC**.
+
+<Info>
+  Platform-dependent code is largely limited to the Zebra daemon. Protocol daemons are mostly platform-independent, making it relatively straightforward to port FRR to new platforms.
+</Info>
+
+## Two user modes
+
+FRR follows a Cisco-like privilege model with two VTY access levels:
+
+- **Normal (view) mode** — read-only access for viewing routing state and system status.
+- **Enable mode** — read-write access for making configuration changes.
+
+This is independent of UNIX user accounts, giving network administrators controlled access to the router without requiring root shell access.

@@ -1,0 +1,234 @@
+---
+title: "LDP / MPLS"
+description: "Label Distribution Protocol for MPLS label-switched path signaling"
+---
+
+LDP (Label Distribution Protocol) is a standardized signaling protocol (RFC 5036) used to distribute MPLS labels between Label Switch Routers (LSRs). By binding labels to IP prefixes (called Forwarding Equivalence Classes, or FECs), LDP builds Label Switched Paths (LSPs) across the network. Forwarding along an LSP uses simple label lookups instead of IP routing lookups, enabling traffic engineering, VPNs, and fast reroute.
+
+FRR's `ldpd` daemon implements LDP and stores label information in `zebra`'s MPLS table, which then programs the labels into the Linux kernel or OpenBSD system.
+
+## Key terminology
+
+<CardGroup cols={2}>
+  <Card title="LSR (Label Switch Router)" icon="router">
+    A router that forwards packets based on MPLS labels. Core network devices in an MPLS network.
+  </Card>
+  <Card title="LER (Label Edge Router)" icon="arrow-right-left">
+    Sits at the edge between an IP network and an MPLS network. Imposes labels on incoming IP packets (ingress) or removes them (egress).
+  </Card>
+  <Card title="FEC (Forwarding Equivalence Class)" icon="layers">
+    A group of packets that are forwarded the same way. In LDP, each IP prefix is a FEC.
+  </Card>
+  <Card title="LSP (Label Switched Path)" icon="route">
+    A unidirectional path through the MPLS network, established by binding a sequence of labels at each hop.
+  </Card>
+</CardGroup>
+
+### LDP label distribution modes
+
+FRR's `ldpd` implements:
+- **Liberal Label Retention** — stores all labels received from all LSRs, not just the best next hop. Faster reconvergence after topology changes.
+- **Downstream Unsolicited** — labels are advertised without being explicitly requested.
+- **Independent Control** — each router independently decides to create label bindings for each FEC.
+
+LDP discovers peers using UDP port 646 (Hello messages) and establishes TCP sessions on port 646 for label exchange.
+
+## Starting ldpd
+
+`ldpd` requires `zebra` to be running first. The Linux kernel must also have MPLS support enabled.
+
+<Steps>
+  <Step title="Enable MPLS in the kernel">
+    ```bash
+    modprobe mpls_router
+    modprobe mpls_iptunnel
+    echo 1 > /proc/sys/net/mpls/conf/eth0/input
+    echo 100000 > /proc/sys/net/mpls/platform_labels
+    ```
+  </Step>
+  <Step title="Enable ldpd in /etc/frr/daemons">
+    ```bash
+    ldpd=yes
+    ```
+  </Step>
+  <Step title="Start FRR">
+    ```bash
+    systemctl start frr
+    ```
+  </Step>
+  <Step title="Verify ldpd is running">
+    ```bash
+    ps -ef | grep ldpd
+    ```
+  </Step>
+</Steps>
+
+## Basic LDP configuration
+
+### Enabling LDP and setting router-id
+
+```frr
+mpls ldp
+ router-id 10.0.0.1
+ !
+ address-family ipv4
+  discovery transport-address 10.0.0.1
+  !
+  interface eth0
+  !
+  interface eth1
+  !
+ exit-address-family
+!
+```
+
+The `router-id` identifies this LDP speaker. The `discovery transport-address` sets the IP address used for TCP LDP sessions on that address family.
+
+### Interface LDP configuration
+
+Interfaces must be explicitly enabled for LDP discovery. Per-interface transport addresses can override the global setting:
+
+```frr
+mpls ldp
+ router-id 10.0.0.1
+ !
+ address-family ipv4
+  !
+  interface eth0
+   discovery transport-address 10.1.0.1
+  !
+  interface eth1
+  !
+ exit-address-family
+!
+```
+
+### IPv6 address family
+
+```frr
+mpls ldp
+ router-id 10.0.0.1
+ !
+ address-family ipv6
+  discovery transport-address 2001:db8::1
+  !
+  interface eth0
+  !
+ exit-address-family
+!
+```
+
+## Targeted LDP sessions
+
+Targeted LDP sessions are point-to-point TCP sessions between non-directly-connected LSRs, used for pseudowire signaling (Layer 2 VPN):
+
+```frr
+mpls ldp
+ router-id 10.0.0.1
+ !
+ address-family ipv4
+  discovery transport-address 10.0.0.1
+  !
+  targeted-neighbor
+   hello holdtime 90
+   hello interval 10
+  !
+  interface lo
+  !
+ exit-address-family
+!
+```
+
+## Neighbor authentication and holdtimes
+
+```frr
+mpls ldp
+ router-id 10.0.0.1
+ !
+ neighbor 10.0.0.2 password mysecret
+ neighbor 10.0.0.2 holdtime 60
+ !
+ address-family ipv4
+  discovery hello holdtime 15
+  discovery hello interval 5
+ exit-address-family
+!
+```
+
+## Dual-stack operation
+
+When operating dual-stack (IPv4 + IPv6), LDP defaults to IPv6 transport (per RFC 7552). To prefer IPv4:
+
+```frr
+mpls ldp
+ dual-stack transport-connection prefer ipv4
+!
+```
+
+## Complete LDP configuration example
+
+```frr
+mpls ldp
+ router-id 10.0.0.1
+ !
+ neighbor 10.0.0.2 password ldpsecret
+ !
+ address-family ipv4
+  discovery transport-address 10.0.0.1
+  discovery hello interval 5
+  discovery hello holdtime 15
+  !
+  interface eth0
+  !
+  interface eth1
+  !
+ exit-address-family
+!
+```
+
+## Show commands
+
+```frr
+! LDP neighbor summary
+show mpls ldp neighbor
+
+! Detailed neighbor information
+show mpls ldp neighbor detail
+
+! LDP neighbor capabilities
+show mpls ldp neighbor 10.0.0.2 capabilities
+
+! LDP discovery (hello) information
+show mpls ldp discovery
+show mpls ldp ipv4 discovery detail
+
+! LDP-enabled interfaces
+show mpls ldp ipv4 interface
+
+! Label bindings (FEC to label mappings)
+show mpls ldp ipv4 binding
+
+! MPLS forwarding table (from zebra)
+show mpls table
+```
+
+### Example neighbor output
+
+```
+west-vm# show mpls ldp neighbor
+AF   ID              State       Remote Address    Uptime
+ipv4 1.1.1.1         OPERATIONAL 1.1.1.1         00:01:37
+```
+
+### Example binding output
+
+```
+west-vm# show mpls ldp ipv4 binding
+AF   Destination          Nexthop         Local Label Remote Label  In Use
+ipv4 1.1.1.1/32           1.1.1.1         16          imp-null         yes
+ipv4 2.2.2.2/32           1.1.1.1         imp-null    16                no
+```
+
+<Note>
+`imp-null` (implicit null, label 3) means the upstream LSR should pop the label before forwarding — this is used on the penultimate hop (PHP, Penultimate Hop Popping).
+</Note>

@@ -1,0 +1,197 @@
+---
+title: "Packet Dumps"
+description: "Capture and analyze routing protocol packets with FRR's built-in dump facilities"
+---
+
+FRR includes a built-in packet capture facility that writes routing protocol traffic to binary files on disk. This is useful for offline analysis of BGP session behavior, troubleshooting route convergence, and producing audit records of routing updates without requiring an external packet capture tool.
+
+## BGP packet dumps
+
+BGP is the primary protocol with dump support. The dump commands live in `bgpd/bgp_dump.c` and are configured in the bgpd configuration context.
+
+### Dump types
+
+<CardGroup cols={2}>
+  <Card title="all">
+    Capture all BGP packets: OPEN, UPDATE, NOTIFICATION, and KEEPALIVE messages, plus state changes.
+  </Card>
+  <Card title="all-et">
+    Same as `all` but uses the extended-timestamp MRT header format (RFC 6396) which adds a microsecond field.
+  </Card>
+  <Card title="updates">
+    Capture BGP UPDATE messages only. Lighter-weight option for tracking route advertisements and withdrawals.
+  </Card>
+  <Card title="updates-et">
+    UPDATE messages only with extended-timestamp MRT header.
+  </Card>
+  <Card title="routes-mrt">
+    Dump the entire BGP routing table in MRT format. Useful for point-in-time RIB snapshots.
+  </Card>
+</CardGroup>
+
+### Enabling BGP dumps
+
+Inside the bgpd configuration (or via vtysh in global configuration mode):
+
+```frr
+! Dump all BGP packets to a file, rotate every 300 seconds
+dump bgp all /var/log/frr/bgp-all.mrt 300
+
+! Dump only BGP UPDATE messages, rotate every 60 seconds
+dump bgp updates /var/log/frr/bgp-updates.mrt 60
+
+! Dump all BGP packets with microsecond timestamps, no rotation
+dump bgp all-et /var/log/frr/bgp-all-et.mrt
+
+! Dump the full BGP routing table (RIB snapshot) every 3600 seconds
+dump bgp routes-mrt /var/log/frr/bgp-routes.mrt 3600
+```
+
+The `INTERVAL` argument is optional. When specified, bgpd closes the current file and opens a new one at the given interval (in seconds). When omitted, a single file is written continuously without rotation.
+
+### Disabling BGP dumps
+
+```frr
+no dump bgp all
+no dump bgp updates
+no dump bgp routes-mrt
+```
+
+## MRT binary format
+
+All BGP dump files use the MRT (Multi-threaded Routing Toolkit) binary format, which is the same format used by route collectors such as RouteViews and RIPE RIS. This makes FRR dump files directly compatible with the broader MRT ecosystem.
+
+### Common MRT header
+
+Every record begins with a fixed 12-byte header (`doc/user/packet-dumps.rst`):
+
+```text
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                              Time                             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|             Type              |            Subtype            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                             Length                            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+When using the extended-timestamp types (`all-et`, `updates-et`), a 4-byte microsecond field is appended to the header (RFC 6396):
+
+```text
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                          Microsecond                          |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+### MRT type and subtype constants
+
+FRR uses the `PROTOCOL_BGP4MP` (type 16) and `PROTOCOL_BGP4MP_ET` (type 17) message types. The subtypes map to:
+
+```text
+BGP4MP_STATE_CHANGE  = 0   (peer FSM state transitions)
+BGP4MP_MESSAGE       = 1   (full BGP message)
+BGP4MP_ENTRY         = 2   (routing table entry)
+BGP4MP_SNAPSHOT      = 3   (routing table snapshot reference)
+```
+
+### BGP message record layout (IPv4)
+
+For `BGP4MP_MESSAGE` records with IPv4 addresses:
+
+```text
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Source AS number       |     Destination AS number     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|        Interface Index        |      Address Family           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Source IP address                      |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                     Destination IP address                    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                       BGP Message Packet                      |
+|                             ...                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+The BGP Message Packet field contains the complete BGP4 message including its own header.
+
+## Analyzing dump files
+
+MRT files can be read with several open-source tools.
+
+<Tabs>
+  <Tab title="bgpdump">
+    `bgpdump` (available in most Linux distribution package repositories) decodes MRT files to human-readable text:
+
+    ```bash
+    bgpdump /var/log/frr/bgp-updates.mrt
+
+    # Show only UPDATE messages with prefixes
+    bgpdump -m /var/log/frr/bgp-updates.mrt | grep "|A|"
+
+    # Summarize a routes-mrt snapshot
+    bgpdump -T /var/log/frr/bgp-routes.mrt
+    ```
+  </Tab>
+  <Tab title="Wireshark">
+    Wireshark can open MRT files directly. Use **File → Open** and select the `.mrt` file. Wireshark will decode the BGP4MP records and display individual BGP UPDATE, OPEN, and NOTIFICATION messages with full attribute expansion.
+
+    For command-line use with `tshark`:
+
+    ```bash
+    tshark -r /var/log/frr/bgp-all.mrt
+    ```
+  </Tab>
+  <Tab title="Python (mrtparse)">
+    The `mrtparse` Python library parses MRT files programmatically:
+
+    ```bash
+    pip install mrtparse
+
+    python3 -c "
+    import mrtparse
+    for entry in mrtparse.Reader('/var/log/frr/bgp-updates.mrt'):
+        print(entry.data)
+    "
+    ```
+  </Tab>
+</Tabs>
+
+## Zebra packet debugging
+
+Zebra itself does not produce MRT-format dump files, but protocol-level packet activity can be captured through debug logging:
+
+```frr
+frr# debug zebra packet
+frr# debug zebra kernel
+frr# debug zebra rib
+frr# terminal monitor
+```
+
+With `terminal monitor` active in vtysh and these debug flags enabled, Zebra will stream netlink messages, RIB changes, and kernel programming events to the console in real time. Redirect the vtysh session to a file if persistent capture is needed:
+
+```bash
+vtysh -c "debug zebra rib" -c "debug zebra kernel" 2>&1 | tee /tmp/zebra-debug.txt
+```
+
+<Note>
+Disable debug flags after capture to avoid performance impact:
+
+```frr
+frr# no debug all
+```
+</Note>
+
+## File rotation and naming
+
+When an `INTERVAL` is specified, bgpd appends a timestamp to the filename at each rotation so prior captures are preserved. The filename pattern becomes:
+
+```text
+/var/log/frr/bgp-updates.mrt.20240402.120000
+```
+
+Ensure the target directory exists and is writable by the `frr` user before enabling dumps. bgpd will silently fail to open the file if the path is inaccessible.

@@ -1,0 +1,213 @@
+---
+title: "vtysh"
+description: "The unified interactive CLI shell for all FRR routing daemons"
+---
+
+`vtysh` is FRR's integrated shell that multiplexes commands across all running routing daemons over Unix domain sockets. Rather than connecting to each daemon individually, operators interact with a single CLI that dispatches commands to whichever daemons are relevant and aggregates the results. Every daemon — zebra, bgpd, ospfd, ospf6d, ripd, ripngd, ldpd, isisd, pimd, nhrpd, eigrpd, babeld, fabricd, bfdd, pbrd, staticd, sharpd, and watchfrr — exposes a `.vty` socket under `/var/run/frr/`. vtysh connects to each of those sockets at startup and keeps those connections alive for the session.
+
+## How vtysh connects to daemons
+
+Each FRR daemon creates a Unix socket at a path like:
+
+```text
+/var/run/frr/bgpd.vty
+/var/run/frr/ospfd.vty
+/var/run/frr/zebra.vty
+```
+
+vtysh discovers and connects to all available sockets when it starts. The `vtysh_client` struct in `vtysh/vtysh.c` tracks the file descriptor and connection state for each daemon. If a daemon is not running its socket simply will not exist and vtysh skips it silently.
+
+## Launching vtysh
+
+```bash
+# Interactive session (connects to all running daemons)
+vtysh
+
+# Connect to a specific daemon only
+vtysh -d bgpd
+vtysh -d ospfd
+vtysh -d zebra
+
+# Load the boot/startup configuration
+vtysh -b
+
+# Execute a single command and exit
+vtysh -c "show ip route"
+
+# Execute commands from a file and exit
+vtysh -f /etc/frr/commands.txt
+
+# Validate configuration without applying it
+vtysh -C
+
+# Write the integrated frr.conf and exit
+vtysh -w
+```
+
+<Note>
+vtysh must be run as root or as a user with access to the `/var/run/frr/` socket directory. The binary is typically installed setuid.
+</Note>
+
+## CLI modes
+
+FRR follows a Cisco-style hierarchical mode structure. Each mode has its own prompt and a restricted set of commands.
+
+<Steps>
+  <Step title="USER EXEC (View) mode">
+    This is the initial mode when vtysh starts. The prompt ends with `>`. Access is read-only: you can run `show` commands but cannot change configuration.
+
+    ```frr
+    frr>
+    frr> show version
+    frr> show ip route
+    ```
+  </Step>
+
+  <Step title="PRIVILEGED EXEC (Enable) mode">
+    Enter privileged mode with `enable`. The prompt changes to `#`. This mode allows operational commands, file writes, and transitions to configuration mode.
+
+    ```frr
+    frr> enable
+    frr#
+    frr# write file
+    frr# show running-config
+    ```
+  </Step>
+
+  <Step title="CONFIGURATION mode">
+    Enter configuration mode with `configure terminal`. The prompt becomes `(config)#`. All configuration changes take effect immediately on the running daemons.
+
+    ```frr
+    frr# configure terminal
+    frr(config)# router bgp 65001
+    frr(config-router)# neighbor 10.0.0.1 remote-as 65002
+    frr(config-router)# end
+    frr#
+    ```
+  </Step>
+
+  <Step title="Exiting modes">
+    Use `exit` to drop one level, `end` or `Ctrl-Z` to return directly to PRIVILEGED EXEC from any sub-mode.
+
+    ```frr
+    frr(config-router)# exit
+    frr(config)# exit
+    frr#
+    frr(config-if)# end
+    frr#
+    ```
+
+    `Ctrl-Z` (SIGTSTP) is handled by vtysh and executes the `end` command internally (`vtysh_main.c:95`).
+  </Step>
+</Steps>
+
+## Tab completion and inline help
+
+vtysh uses GNU Readline for line editing and completion.
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Complete the current token or list ambiguous completions |
+| `?` | Show possible completions at the current cursor position |
+| `Ctrl-A` | Move to the beginning of the line |
+| `Ctrl-E` | Move to the end of the line |
+| `Ctrl-P` / `Up` | Previous history entry |
+| `Ctrl-N` / `Down` | Next history entry |
+| `Ctrl-Z` | End configuration session, return to enable mode |
+
+Press `?` at any point in a partial command to see what tokens are valid next:
+
+```frr
+frr# show ip ?
+  bgp        BGP information
+  igmp       IGMP information
+  mroute     IP multicast routing table
+  msdp       MSDP information
+  ospf       OSPF information
+  pim        PIM information
+  prefix-list  IP prefix-list
+  route      IP routing table
+  ...
+```
+
+## Key show commands
+
+These commands work across all running daemons from a single vtysh session:
+
+```frr
+frr# show version
+frr# show running-config
+frr# show ip route
+frr# show ip route summary
+frr# show interface
+frr# show interface eth0
+frr# show ip bgp summary
+frr# show ip ospf neighbor
+frr# show memory
+frr# show logging
+frr# who
+frr# list
+```
+
+The `find` command performs a substring search across all defined commands in all modes:
+
+```frr
+frr# find segment-routing on
+  (ospf)  segment-routing on
+```
+
+## Output filtering
+
+vtysh supports inline pipe filtering on any command output:
+
+```frr
+frr# show ip bgp sum json | include remoteAs
+frr# show run | include neigh.*[0-9]{2}\.0\.[2-4]\.[0-9]*
+```
+
+The `| include REGEX` modifier filters output lines using POSIX Extended Regular Expressions.
+
+## Writing and loading configuration
+
+```frr
+frr# write file
+frr# write terminal
+frr# copy running-config startup-config
+```
+
+<Warning>
+`write file` writes the integrated `frr.conf`. If individual daemon config files (e.g. `bgpd.conf`) exist alongside `frr.conf`, the behavior depends on the `vtysh_write_integrated` setting. Check `/etc/frr/vtysh.conf` to confirm.
+</Warning>
+
+To load configuration at boot, run:
+
+```bash
+vtysh -b
+```
+
+This reads and applies `frr.conf` (or the per-daemon config files) in the same way as daemon startup.
+
+## vtysh.conf
+
+`vtysh.conf` is vtysh's own configuration file, separate from the routing daemon configs. It is read at startup and can set:
+
+```text
+!
+! /etc/frr/vtysh.conf
+!
+username root nopassword
+service integrated-vtysh-config
+```
+
+The `service integrated-vtysh-config` directive tells vtysh to write a single `frr.conf` instead of per-daemon files. The `username` directive allows passwordless access for specific system users.
+
+## Pager support
+
+vtysh pipes long output through a pager. The pager is controlled by the `VTYSH_PAGER` environment variable:
+
+```bash
+export VTYSH_PAGER=less
+vtysh
+```
+
+If `VTYSH_PAGER` is not set, vtysh uses the compiled-in default. To disable paging entirely, set the variable to an empty string or use `terminal length 0` inside the session.

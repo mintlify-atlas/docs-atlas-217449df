@@ -1,0 +1,311 @@
+---
+title: "CLI Development"
+description: "Adding new CLI commands using FRR's DEFUN macro system"
+---
+
+FRR has a powerful internal CLI framework that handles command parsing, tab completion, help text, and mode navigation. All CLI definitions live in `lib/command.h`. This page explains how to add new commands.
+
+## VTY modes (nodes)
+
+FRR's CLI is organized into **modes** (called nodes). Each mode has its own set of commands. The complete list is in the `enum node_type` in `lib/command.h`:
+
+```c
+enum node_type {
+    AUTH_NODE,              /* Authentication mode of vty interface */
+    VIEW_NODE,              /* View node — default unprivileged mode */
+    AUTH_ENABLE_NODE,       /* Authentication mode for enable */
+    ENABLE_NODE,            /* Enable (privileged exec) node */
+    CONFIG_NODE,            /* Global configuration mode */
+    VRF_NODE,               /* VRF mode node */
+    INTERFACE_NODE,         /* Interface mode node */
+    NH_GROUP_NODE,          /* Nexthop-Group mode node */
+    RIP_NODE,               /* RIP protocol mode node */
+    RIPNG_NODE,             /* RIPng protocol mode node */
+    BGP_NODE,               /* BGP protocol mode */
+    BGP_VPNV4_NODE,         /* BGP MPLS-VPN PE exchange */
+    BGP_IPV4_NODE,          /* BGP IPv4 unicast address family */
+    BGP_IPV4M_NODE,         /* BGP IPv4 multicast address family */
+    BGP_IPV6_NODE,          /* BGP IPv6 address family */
+    BGP_EVPN_NODE,          /* BGP EVPN node */
+    OSPF_NODE,              /* OSPF protocol mode */
+    OSPF6_NODE,             /* OSPF for IPv6 mode */
+    LDP_NODE,               /* LDP protocol mode */
+    LDP_IPV4_NODE,          /* LDP IPv4 address family */
+    LDP_IPV6_NODE,          /* LDP IPv6 address family */
+    ISIS_NODE,              /* IS-IS protocol mode */
+    RMAP_NODE,              /* Route map node */
+    ACCESS_NODE,            /* Access list node */
+    PREFIX_NODE,            /* Prefix list node */
+    COMMUNITY_LIST_NODE,    /* Community list node */
+    BFD_NODE,               /* BFD protocol node */
+    /* ... and many more protocol/feature-specific nodes */
+};
+```
+
+Users move between modes by entering mode-specific commands such as `configure terminal` (enters `CONFIG_NODE`) or `router bgp 65000` (enters `BGP_NODE`).
+
+### Walkup behavior
+
+If a command is entered in a child node (e.g., `OSPF_NODE`) and is not found there, FRR will walk up to parent nodes (ultimately reaching `CONFIG_NODE`) to try to match the command. This allows commands like `ip route` to work from inside any protocol config node. Be aware of this behavior when designing command hierarchies.
+
+## The DEFUN macro
+
+All CLI command handlers are defined with the `DEFUN` macro, declared in `lib/command.h`:
+
+```c
+DEFUN(funcname,
+      cmdname,
+      "command string syntax",
+      "Doc for token 1\n"
+      "Doc for token 2\n")
+{
+    /* handler body */
+    return CMD_SUCCESS;
+}
+```
+
+The four arguments are:
+
+1. **`funcname`** — the C function name for the handler.
+2. **`cmdname`** — identifier for the `struct cmd_element`; by convention `funcname` + `_cmd`.
+3. **`cmdstr`** — the command definition string in FRR's grammar.
+4. **`helpstr`** — newline-delimited doc strings, one per token.
+
+The macro expands into a `struct cmd_element` declaration and the handler function signature. The handler receives `(const struct cmd_element *self, struct vty *vty, int argc, struct cmd_token *argv[])`.
+
+### Example: a simple show command
+
+```c
+DEFUN(show_version,
+      show_version_cmd,
+      "show version",
+      SHOW_STR
+      "Displays the running version of FRR\n")
+{
+    vty_out(vty, "FRRouting %s (%s).\n",
+            FRR_VERSION, FRR_VCS_VERSION);
+    return CMD_SUCCESS;
+}
+```
+
+### Example: a configuration command with arguments
+
+```c
+DEFUN(config_terminal,
+      config_terminal_cmd,
+      "configure terminal",
+      "Configuration from vty interface\n"
+      "Configuration terminal\n")
+{
+    vty->node = CONFIG_NODE;
+    return CMD_SUCCESS;
+}
+```
+
+## Command string grammar
+
+FRR uses its own grammar for the command definition string. The parser is implemented in Bison (`lib/command_parse.y`) and the lexer in Flex (`lib/command_lex.l`).
+
+### Token types
+
+| Token | Syntax | Description |
+|---|---|---|
+| `WORD` | `show ip bgp` | Literal keyword. Matches itself. |
+| `IPV4` | `A.B.C.D` | Matches an IPv4 address. |
+| `IPV6` | `X:X::X:X` | Matches an IPv6 address. |
+| `IPV4_PREFIX` | `A.B.C.D/M` | Matches an IPv4 prefix in CIDR notation. |
+| `IPV6_PREFIX` | `X:X::X:X/M` | Matches an IPv6 prefix in CIDR notation. |
+| `MAC` | `M:A:C` | Matches a 48-bit MAC address. |
+| `VARIABLE` | `FOOBAR` | Matches any input (uppercase name). |
+| `RANGE` | `(X-Y)` | Matches integers in the range X to Y inclusive. |
+
+### Selectors and options
+
+| Construct | Meaning |
+|---|---|
+| `<foo\|bar>` | Mutual exclusion — user must enter exactly one of the options. |
+| `[foo\|bar]` | Optional — the user may enter one of the options or nothing. |
+| `{foo\|bar}` | One or more options may be provided in any order. |
+| `FOO...` | The preceding variable token may repeat any number of times. |
+| `$name` | Assign a variable name to the preceding token. |
+
+### Examples
+
+```
+# Simple keyword command
+"show ip bgp"
+
+# Optional element
+"show [ip] bgp neighbors"
+
+# Choice of values
+"neighbor <A.B.C.D|X:X::X:X> remote-as (1-4294967295)"
+
+# Multiple optional flags in any order
+"bgp {always-compare-med|deterministic-med}"
+
+# Variadic — accept one or more prefixes
+"aggregate-address A.B.C.D/M..."
+```
+
+## Installing commands
+
+After defining a command with `DEFUN`, register it in a specific node by calling `install_element()`:
+
+```c
+install_element(ENABLE_NODE, &show_version_cmd);
+install_element(CONFIG_NODE, &config_terminal_cmd);
+install_element(BGP_NODE, &neighbor_remote_as_cmd);
+```
+
+These calls are typically grouped in a `*_vty_init()` function:
+
+```c
+void bgp_vty_init(void)
+{
+    install_element(BGP_NODE, &neighbor_remote_as_cmd);
+    install_element(BGP_NODE, &no_neighbor_cmd);
+    install_element(BGP_IPV4_NODE, &neighbor_activate_cmd);
+    /* ... */
+}
+```
+
+<Tip>
+By convention, command definitions and their `install_element()` calls live in `*_vty.c` / `*_vty.h` files (e.g., `bgpd/bgp_vty.c`). Do not scatter command definitions throughout source files.
+</Tip>
+
+## DEFPY: the enhanced DEFUN
+
+`DEFPY` is a preprocessed variant of `DEFUN` that automatically parses typed arguments and passes them as named C function parameters. It is processed by `python/clidef.py` at compile time via the `clippy` tool.
+
+```c
+DEFPY(func, func_cmd, "[no] foo bar A.B.C.D (0-99)$num", "...help...")
+```
+
+This generates a handler with the following signature:
+
+```c
+func(self, vty, argc, argv,   /* standard CLI arguments */
+     const char *no,          /* "no" keyword if present, else NULL */
+     struct in_addr bar,      /* parsed IP address */
+     const char *bar_str,     /* raw IP address string */
+     long num,                /* parsed integer */
+     const char *num_str)     /* raw integer string */
+```
+
+### DEFPY type rules
+
+| Token(s) | C type | Value if omitted |
+|---|---|---|
+| `A.B.C.D` | `struct in_addr` | `0.0.0.0` |
+| `X:X::X:X` | `struct in6_addr` | `::` |
+| `A.B.C.D` + `X:X::X:X` | `const union sockunion *` | `NULL` |
+| `A.B.C.D/M` | `const struct prefix_ipv4 *` | `NULL` |
+| `X:X::X:X/M` | `const struct prefix_ipv6 *` | `NULL` |
+| `(0-9)` | `long` | `0` |
+| `VARIABLE` | `const char *` | `NULL` |
+
+To use `DEFPY`, include the generated `_clippy.c` file before any `DEFPY` statements:
+
+```c
+#ifndef VTYSH_EXTRACT_PL
+#include "bgpd/bgp_vty_clippy.c"
+#endif
+
+DEFPY(bgp_neighbor_cmd, ...)
+```
+
+And add the dependency to the `Makefile`:
+
+```make
+bgp_vty.o: bgp_vty_clippy.c
+```
+
+<Note>
+A `DEFUN` can be converted to a `DEFPY` without any other code changes. The standard `self, vty, argc, argv` parameters remain available.
+</Note>
+
+## Doc strings
+
+Every token in the command definition requires exactly one doc string, provided as the last argument to `DEFUN`/`DEFPY`, concatenated with `\n` delimiters:
+
+```c
+DEFUN(config_terminal,
+      config_terminal_cmd,
+      "configure terminal",
+      "Configuration from vty interface\n"
+      "Configuration terminal\n")
+```
+
+The number of doc strings must equal the number of tokens (left-to-right, ignoring selector punctuation). The CLI uses these strings for tab-completion help.
+
+Common shared doc strings are defined as macros in `lib/command.h`:
+
+```c
+#define SHOW_STR "Show running system information\n"
+#define IP_STR   "IP information\n"
+#define IPV6_STR "IPv6 information\n"
+#define NO_STR   "Negate a command or set its defaults\n"
+#define BGP_STR  "BGP information\n"
+```
+
+## Accessing arguments in handlers
+
+In a `DEFUN` handler, `argc` is the number of matched tokens and `argv[]` is the array of `struct cmd_token *` for the matching path. Use the `->text` and `->arg` fields to distinguish between matched options:
+
+```c
+DEFUN(example_cmd,
+      example_cmd_cmd,
+      "command <foo|bar> WORD",
+      "Example\n" "Foo option\n" "Bar option\n" "Any word\n")
+{
+    if (strmatch(argv[1]->text, "foo")) {
+        /* handle foo */
+    } else {
+        /* handle bar */
+    }
+    const char *word = argv[2]->arg;  /* user's input */
+    return CMD_SUCCESS;
+}
+```
+
+## Return values
+
+Command handlers return one of the `CMD_*` constants:
+
+| Constant | Meaning |
+|---|---|
+| `CMD_SUCCESS` | Command completed without error. |
+| `CMD_WARNING` | Command completed with a warning message. |
+| `CMD_WARNING_CONFIG_FAILED` | Config command failed; a warning was printed. |
+
+## Debugging command definitions
+
+Use the `tools/permutations` utility to preview all matching input combinations for a command string:
+
+```bash
+./tools/permutations "show [ip] bgp [<view|vrf> WORD]"
+```
+
+Output:
+
+```
+show ip bgp view WORD
+show ip bgp vrf WORD
+show ip bgp
+show bgp view WORD
+show bgp vrf WORD
+show bgp
+```
+
+From within a running `vtysh` or daemon VTY, dump the current mode's command graph:
+
+```bash
+sudo vtysh -c 'show cli graph' | dot -Tjpg -Grankdir=LR > graph.jpg
+```
+
+List all permutations for the current node:
+
+```frr
+Router# list permutations
+```

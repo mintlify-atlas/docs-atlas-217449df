@@ -1,0 +1,226 @@
+---
+title: "Logging"
+description: "Configure log destinations, levels, and filtering for FRR daemons"
+---
+
+Every FRR daemon uses a shared logging subsystem defined in `lib/log.c` and `lib/log.h`. Logging is configured per-daemon inside its configuration file or interactively through vtysh. Multiple log destinations can be active simultaneously, each with its own severity threshold.
+
+## Log levels
+
+FRR uses the standard syslog severity scale. From most to least severe:
+
+| Level | Name | Typical use |
+|-------|------|-------------|
+| 0 | `emergencies` | System is unusable |
+| 1 | `alerts` | Immediate action required |
+| 2 | `critical` | Critical conditions |
+| 3 | `errors` | Error conditions — most important daemon messages use this level |
+| 4 | `warnings` | Unexpected events; daemon believes it can continue |
+| 5 | `notifications` | Daemon startup and shutdown messages |
+| 6 | `informational` | Normal operational information |
+| 7 | `debugging` | Verbose output enabled by `debug` commands |
+
+<Note>
+`LOG_CRIT`, `LOG_ALERT`, and `LOG_EMERG` are defined but not currently used in FRR code. Use `errors` for the highest-priority operational messages (`lib/log.h:53`).
+</Note>
+
+The priority string array is defined in `lib/log.c:62`:
+
+```text
+"emergencies", "alerts", "critical", "errors", "warnings",
+"notifications", "informational", "debugging"
+```
+
+## Log destinations
+
+FRR supports four simultaneous log destinations (`lib/log.h:61–65`): syslog, stdout, terminal monitor, and file. Each is independently enabled and assigned its own minimum severity level.
+
+### stdout
+
+```frr
+log stdout informational
+no log stdout
+```
+
+Sends log messages to standard output. If the daemon is running in the foreground this is visible in the terminal. The `LEVEL` argument is optional; omitting it uses the default level (typically `debugging`).
+
+### File
+
+```frr
+log file /var/log/frr/bgpd.log informational
+log file /var/log/frr/zebra.log errors
+no log file
+```
+
+Writes log messages to the named file. If no level is specified, the default level is used.
+
+<Warning>
+If no file logging is configured and a daemon crashes due to a signal or assertion failure, it will attempt to save crash information to `/var/tmp/frr.<daemon-name>.crashlog`. For security, this only happens if the file does not already exist — delete it after reviewing the crash data.
+</Warning>
+
+### Syslog
+
+```frr
+log syslog warnings
+no log syslog
+```
+
+Sends log messages to the system's syslog daemon. The facility defaults to `daemon` but can be changed with `log facility`.
+
+### Terminal monitor
+
+```frr
+log monitor debugging
+no log monitor
+```
+
+Enables logging to vtysh sessions that have activated `terminal monitor`. This is useful for watching live debug output without touching log files.
+
+## Enabling terminal monitor in vtysh
+
+Inside a vtysh privileged session, run:
+
+```frr
+frr# terminal monitor
+```
+
+All log messages at or above the configured `log monitor` level are then streamed to that vtysh terminal in real time. To stop:
+
+```frr
+frr# no terminal monitor
+```
+
+## Syslog facility
+
+```frr
+log facility daemon
+log facility local0
+no log facility
+```
+
+Changes the syslog facility used when logging to syslog. Valid values include: `kern`, `user`, `mail`, `daemon`, `auth`, `syslog`, `lpr`, `news`, `uucp`, `cron`, and `local0` through `local7`. The default is `daemon`. The `no` form resets the facility back to `daemon`.
+
+## Including priority in log messages
+
+```frr
+log record-priority
+no log record-priority
+```
+
+When enabled, the severity level name is prepended to every log message sent to stdout, a file, or a terminal monitor (it is not prepended to syslog messages, since syslog handles priorities separately). Disabled by default.
+
+Example output with `log record-priority` active:
+
+```text
+2024/04/02 12:01:05 BGP: [errors] peer 10.0.0.1 went down
+```
+
+## Timestamp precision
+
+```frr
+log timestamp precision 3
+no log timestamp precision
+```
+
+Sets the number of decimal digits after the second in log timestamps. The value must be between 0 and 6 (maximum precision is microseconds). The default is 0 (one-second accuracy). Use `no log timestamp precision` to restore the default.
+
+With millisecond precision (`precision 3`):
+
+```text
+2024/04/02 12:01:05.123 OSPF: [informational] neighbor 10.1.1.1 state changed to Full
+```
+
+## Command logging
+
+```frr
+log commands
+```
+
+Logs every command typed by any user to all enabled log destinations. Output includes the full command line, including passwords in plain text.
+
+<Warning>
+Once enabled, command logging can only be disabled by restarting the daemon. Because passwords appear in plain text, enable this only in controlled environments.
+</Warning>
+
+## Protocol-specific debug commands
+
+Debug commands are enabled in PRIVILEGED EXEC or CONFIGURATION mode and produce `debugging`-level messages.
+
+<Tabs>
+  <Tab title="BGP">
+    ```frr
+    debug bgp neighbor-events
+    debug bgp updates
+    debug bgp keepalives
+    debug bgp bestpath 10.0.0.0/8
+    debug bgp nht
+    debug bgp update-groups
+    debug bgp zebra
+    ```
+  </Tab>
+  <Tab title="OSPF">
+    ```frr
+    debug ospf packet all send detail
+    debug ospf ism
+    debug ospf nsm
+    debug ospf event
+    debug ospf lsa
+    debug ospf lsa generate
+    debug ospf lsa flooding
+    debug ospf te
+    debug ospf zebra
+    ```
+  </Tab>
+  <Tab title="Zebra">
+    ```frr
+    debug zebra rib
+    debug zebra kernel
+    debug zebra events
+    debug zebra packet
+    debug zebra fpm
+    ```
+  </Tab>
+</Tabs>
+
+All debug output goes to the log destinations currently configured. To see it in real time, combine with `terminal monitor` in vtysh.
+
+## Turning off all debug
+
+```frr
+no debug all
+```
+
+Disables every active debug flag in the daemon at once. This is available in PRIVILEGED EXEC mode.
+
+## Viewing the current log configuration
+
+```frr
+frr# show logging
+```
+
+Shows which log destinations are enabled, their configured levels, the active facility, and whether `log record-priority` and timestamp precision settings are in effect.
+
+## Sample configuration
+
+```frr
+!
+! Logging configuration block inside a daemon .conf file
+!
+log file /var/log/frr/bgpd.log informational
+log syslog warnings
+log record-priority
+log timestamp precision 3
+!
+```
+
+## Startup log options
+
+Each FRR daemon accepts command-line flags to set log behavior before the config file is loaded:
+
+```bash
+bgpd --log file:/var/log/frr/bgpd.log --log-level informational -d
+bgpd --log stdout --log-level debugging -d
+bgpd --log syslog -d
+```
+
+These values appear in `show running-config` and can be overridden at runtime by the normal `log` commands.

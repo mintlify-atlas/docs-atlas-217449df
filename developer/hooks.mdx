@@ -1,0 +1,235 @@
+---
+title: "Hooks"
+description: "FRR's hook system for modular event-driven callbacks between subsystems"
+---
+
+FRR's hook system (`lib/hook.h`) provides type-safe, subscribable callback lists. Hooks let subsystems expose well-defined event points that other code — including dynamically loaded modules — can subscribe to without creating hard compile-time dependencies.
+
+## What hooks are
+
+A hook is a named, ordered list of callback functions. When code calls `hook_call()`, every registered callback is invoked in priority order. The caller does not need to know how many subscribers exist or who they are.
+
+Hooks differ from direct function calls in a fundamental way: the code that fires the hook has no knowledge of the code that handles it. This makes hooks the right tool for:
+
+- Plugin/module callbacks (e.g., a module reacting to interface state changes)
+- Ordered initialization and cleanup sequences
+- Cross-subsystem notifications without circular include dependencies
+
+## Hook lifecycle
+
+Three files are involved in a hook:
+
+| File | Role |
+|---|---|
+| Header (`.h`) | Declares the hook with `DECLARE_HOOK` |
+| Source (`.c`) | Defines the hook with `DEFINE_HOOK` and calls it with `hook_call` |
+| Consumer (any `.c`) | Registers a callback with `hook_register` |
+
+## DECLARE_HOOK
+
+`DECLARE_HOOK` goes in a header file and makes the hook visible to other translation units. It declares the backing `struct hook` variable and generates type-checking helper functions that catch mismatched callback signatures at compile time.
+
+```c
+/* In mydaemon.h */
+#include "hook.h"
+
+DECLARE_HOOK(some_update_event, (struct eventinfo *info), (info))
+```
+
+Signature:
+
+```c
+DECLARE_HOOK(hookname, arglist, passlist)
+```
+
+- **`hookname`** — unique name for the hook.
+- **`arglist`** — parameter list with types, enclosed in parentheses, e.g., `(struct foo *f, int val)`.
+- **`passlist`** — same parameters without types, e.g., `(f, val)`.
+
+The `arglist` and `passlist` must use identical parameter names.
+
+<Warning>
+Do not use parameter names that start with `hook` — these can collide with names generated internally by the hook macros.
+</Warning>
+
+For cleanup hooks with reversed priority ordering, use `DECLARE_KOOH` (same syntax, semantics differ at call time).
+
+## DEFINE_HOOK
+
+`DEFINE_HOOK` goes in exactly one `.c` file and provides the actual implementation. It generates the `struct hook` instance and the static `hook_call_<hookname>()` function that iterates over registered entries.
+
+```c
+/* In mydaemon.c */
+#include "mydaemon.h"
+
+DEFINE_HOOK(some_update_event, (struct eventinfo *info), (info))
+```
+
+`hook_call` can only be invoked from the same source file as the `DEFINE_HOOK`. This is intentional: it prevents a hook from being fired from multiple places, which would make execution order hard to reason about.
+
+For cleanup hooks with reversed priority order, use `DEFINE_KOOH`.
+
+## hook_call
+
+Invoke all registered callbacks for a hook:
+
+```c
+hook_call(some_update_event, info);
+```
+
+`hook_call` expands to `hook_call_<hookname>(...)`. It iterates the registered entries in priority order (ascending) and sums their return values. If no callbacks are registered, it returns 0.
+
+Multiple-argument example:
+
+```c
+/* Declared as: DECLARE_HOOK(baz, (const void *x, in_addr_t y), (x, y)) */
+hook_call(baz, NULL, INADDR_ANY);
+```
+
+## Registering callbacks
+
+### hook_register
+
+Register a callback with the default priority (1000):
+
+```c
+/* In mymodule.c */
+#include "mydaemon.h"
+
+static int event_handler(struct eventinfo *info)
+{
+    /* handle the event */
+    return 0;
+}
+
+/* Called during module initialization: */
+hook_register(some_update_event, event_handler);
+```
+
+### hook_register_prio
+
+Register with an explicit priority. Lower values run earlier:
+
+```c
+hook_register_prio(some_update_event, 500, event_handler);
+```
+
+### hook_register_arg
+
+Pass an extra opaque argument to the callback. The argument is inserted as the first parameter:
+
+```c
+static int event_handler_with_ctx(void *ctx, struct eventinfo *info)
+{
+    struct myctx *c = ctx;
+    /* use c and info */
+    return 0;
+}
+
+hook_register_arg(some_update_event, event_handler_with_ctx, my_ctx_ptr);
+```
+
+### hook_register_arg_prio
+
+Combine a priority value with an extra argument:
+
+```c
+hook_register_arg_prio(some_update_event, 500, event_handler_with_ctx, my_ctx_ptr);
+```
+
+## Unregistering callbacks
+
+```c
+hook_unregister(some_update_event, event_handler);
+hook_unregister_arg(some_update_event, event_handler_with_ctx, my_ctx_ptr);
+```
+
+There is no `_prio` variant for unregistration; the priority is only relevant during registration.
+
+## Priority ordering
+
+The priority is a signed integer. Callbacks are called in ascending order (lower value = called first). Recommended ranges from `lib/hook.h`:
+
+| Range | Usage |
+|---|---|
+| `-999` to `999` | Main daemon or library code |
+| `-1999` to `-1000` | Module callbacks that must run *before* the daemon's |
+| `1000` to `1999` | Module callbacks that run *after* the daemon's (default: 1000) |
+
+The default priority of 1000 is based on the expectation that most `hook_register()` calls come from loadable modules, which should run after the daemon's own handlers.
+
+**KOOH hooks** (`DEFINE_KOOH` / `DECLARE_KOOH`) use the same priority value but iterate in *reverse* order. This lets you use the same numeric priority for paired init/cleanup hooks while guaranteeing that cleanup runs in the reverse sequence of initialization.
+
+## Return values
+
+Callbacks always return `int`. `hook_call` returns the sum of all return values. There are no predefined semantics for the value — most callers ignore it. When a hook is used for success/failure signaling, the convention is:
+
+- `0` = success
+- `1` = failure (not `-1` or other values)
+
+There is no built-in mechanism to abort the callback chain after a failure. If early abort is needed, use an extra `bool *aborted` argument in the hook's parameter list.
+
+## Complete example from lib/hook.h
+
+The following example is drawn directly from the comments in `lib/hook.h`:
+
+```c
+/* ---- mydaemon.h ---- */
+#include "hook.h"
+DECLARE_HOOK(some_update_event, (struct eventinfo *info), (info))
+
+/* ---- mydaemon.c ---- */
+#include "mydaemon.h"
+DEFINE_HOOK(some_update_event, (struct eventinfo *info), (info))
+
+/* ... later, when the event occurs: */
+hook_call(some_update_event, info);
+
+/* ---- mymodule.c ---- */
+#include "mydaemon.h"
+
+static int event_handler(struct eventinfo *info) {
+    /* react to the event */
+    return 0;
+}
+
+/* called during module init: */
+hook_register(some_update_event, event_handler);
+```
+
+## The struct hook internals
+
+For reference, the internal structures from `lib/hook.h`:
+
+```c
+struct hookent {
+    struct hookent *next;
+    void *hookfn;             /* function pointer */
+    void *hookarg;            /* extra argument for _arg variants */
+    bool has_arg;
+    int priority;
+    struct frrmod_runtime *module;
+    const char *fnname;
+};
+
+struct hook {
+    const char *name;
+    struct hookent *entries;  /* singly-linked list, sorted by priority */
+    bool reverse;             /* true for KOOH */
+};
+
+#define HOOK_DEFAULT_PRIORITY 1000
+```
+
+The `module` field records which loadable module registered the callback. This is used to automatically unregister all callbacks from a module when the module is unloaded (future functionality).
+
+## Hooks vs. direct function calls
+
+| Aspect | Hook | Direct call |
+|---|---|---|
+| Dependencies | Consumer only includes hook declaration header | Consumer must include provider's full header |
+| Zero subscribers | `hook_call` returns 0, no crash | Would need a NULL check or stub |
+| Multiple handlers | Supported natively | Requires manual list management |
+| Order control | Priority value | Caller must manage order |
+| Type safety | Compile-time check via `_hook_typecheck_` helpers | Standard C type checking |
+| Circular includes | Avoided — hook header is minimal | Can cause circular dependency |

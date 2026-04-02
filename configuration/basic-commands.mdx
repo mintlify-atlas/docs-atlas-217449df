@@ -1,0 +1,372 @@
+---
+title: "Basic Commands"
+description: "Core VTY configuration commands shared across all FRR daemons"
+---
+
+FRR daemons share a common command-line interface built on the VTY (Virtual TeletYpe) system. The commands described here apply to every daemon — `zebra`, `bgpd`, `ospfd`, `ripd`, and the rest.
+
+## Configuration file locations
+
+Config files are found in `/etc/frr/`. Each daemon uses its own file named after the daemon plus `.conf`. For example, zebra reads `/etc/frr/zebra.conf` and bgpd reads `/etc/frr/bgpd.conf`. You can override the path at startup with the `-f` / `--config_file` flag.
+
+The `/etc/frr/daemons` file controls which daemons are enabled when FRR starts as a system service:
+
+```frr
+zebra=yes
+bgpd=yes
+ospfd=no
+ospf6d=no
+ripd=no
+ripngd=no
+isisd=no
+pimd=no
+ldpd=no
+nhrpd=no
+eigrpd=no
+babeld=no
+sharpd=no
+staticd=no
+pbrd=no
+bfdd=no
+fabricd=no
+```
+
+Change any `no` to `yes` and restart the service to enable that daemon.
+
+## VTY modes
+
+There are three primary VTY modes:
+
+<AccordionGroup>
+  <Accordion title="View mode (normal mode)">
+    The default mode after connecting. Provides read-only access. The prompt ends with `>`. You can run `show` commands but cannot change configuration.
+
+    ```frr
+    Router> show ip route
+    Router> show version
+    ```
+  </Accordion>
+
+  <Accordion title="Enable mode (privileged mode)">
+    Entered by typing `enable` and supplying the enable password. The prompt ends with `#`. Provides read-write access and allows entering configure terminal mode.
+
+    ```frr
+    Router> enable
+    Password: 
+    Router#
+    ```
+  </Accordion>
+
+  <Accordion title="Configure terminal mode">
+    Entered from enable mode. Used for making configuration changes. The prompt shows `(config)`.
+
+    ```frr
+    Router# configure terminal
+    Router(config)# hostname my-router
+    Router(config)# end
+    Router#
+    ```
+
+    Press `Ctrl-Z` or type `end` to return to enable mode without explicitly exiting each sub-mode.
+  </Accordion>
+</AccordionGroup>
+
+## Basic config commands
+
+### Hostname
+
+```frr
+hostname HOSTNAME
+```
+
+Sets the hostname displayed in the CLI prompt and stored in the running configuration.
+
+### Passwords
+
+```frr
+password PASSWORD
+no password PASSWORD
+```
+
+Sets the VTY password required to connect. Without a password, VTY connections are refused.
+
+```frr
+enable password PASSWORD
+no enable password PASSWORD
+```
+
+Sets the password required to enter enable mode. The `no` form removes it.
+
+### Password encryption
+
+```frr
+service password-encryption
+```
+
+Encrypts the stored password in the configuration file. Once enabled, passwords are written in encrypted form rather than plain text.
+
+## Log commands
+
+FRR supports multiple simultaneous logging destinations, each with its own severity level.
+
+**Log levels** (most severe to least):
+`emergencies` | `alerts` | `critical` | `errors` | `warnings` | `notifications` | `informational` | `debugging`
+
+<Tabs>
+  <Tab title="stdout">
+    ```frr
+    log stdout informational
+    no log stdout
+    ```
+
+    Writes log messages to standard output. Useful when running daemons in the foreground for debugging.
+  </Tab>
+
+  <Tab title="file">
+    ```frr
+    log file /var/log/frr/bgpd.log informational
+    no log file
+    ```
+
+    Writes log messages to the specified file. If no daemon file logging is configured and the daemon crashes, it will attempt to write crash information to `/var/tmp/frr.<daemon-name>.crashlog`.
+  </Tab>
+
+  <Tab title="syslog">
+    ```frr
+    log syslog warnings
+    no log syslog
+    ```
+
+    Sends log messages to the system syslog daemon.
+  </Tab>
+
+  <Tab title="monitor">
+    ```frr
+    log monitor debugging
+    no log monitor
+    ```
+
+    Sends log messages to VTY terminals that have enabled monitoring via `terminal monitor`.
+  </Tab>
+</Tabs>
+
+### Log facility
+
+```frr
+log facility FACILITY
+no log facility
+```
+
+Changes the syslog facility used for syslog messages. The default is `daemon`. The `no` form resets to `daemon`.
+
+### Log record priority
+
+```frr
+log record-priority
+no log record-priority
+```
+
+Includes the severity level in all messages logged to a file, stdout, or terminal monitor (not syslog). Disabled by default.
+
+### Log timestamp precision
+
+```frr
+log timestamp precision (0-6)
+no log timestamp precision
+```
+
+Sets the number of sub-second digits in log timestamps. The default is 0 (one-second accuracy). Setting precision to 3 gives millisecond timestamps:
+
+```frr
+log timestamp precision 3
+```
+
+### Command logging
+
+```frr
+log commands
+```
+
+Logs every command typed by any user to all enabled logging destinations. Note that this includes full command text, including passwords. This setting cannot be turned off at runtime — only a daemon restart disables it.
+
+## Service commands
+
+```frr
+service advanced-vty
+```
+
+Enables advanced VTY mode, which provides additional editing and completion features.
+
+```frr
+service terminal-length (0-512)
+```
+
+Sets the system-wide default terminal length for all VTY sessions. Affects how `show` output is paginated.
+
+## Saving and viewing configuration
+
+<Steps>
+  <Step title="View the running configuration">
+    From enable mode, display the current in-memory configuration:
+
+    ```frr
+    Router# show running-config
+    ```
+
+    From within a VTY session you can also use:
+
+    ```frr
+    Router# write terminal
+    ```
+  </Step>
+
+  <Step title="Save to the startup config file">
+    Write the running configuration to the on-disk config file:
+
+    ```frr
+    Router# write file
+    ```
+
+    This is equivalent to:
+
+    ```frr
+    Router# copy running-config startup-config
+    ```
+  </Step>
+</Steps>
+
+## Line VTY settings
+
+```frr
+line vty
+ exec-timeout 10 0
+ access-class MYACL
+```
+
+Enter VTY line configuration mode with `line vty`. Inside this mode:
+
+| Command | Effect |
+|---|---|
+| `exec-timeout MINUTES [SECONDS]` | Set idle timeout. `exec-timeout 0 0` disables the timeout entirely. Default is 10 minutes. |
+| `access-class ACCESS-LIST` | Restrict VTY connections to addresses matching the given access list. |
+| `no exec-timeout` | Equivalent to `exec-timeout 0 0` — disables timeout. |
+
+## Banner
+
+```frr
+banner motd default
+no banner motd
+```
+
+`banner motd default` sets the default message-of-the-day string shown at login. `no banner motd` removes any banner.
+
+## Common debug and show commands
+
+<AccordionGroup>
+  <Accordion title="show version">
+    ```frr
+    Router# show version
+    ```
+
+    Displays the FRR package version and build host information.
+  </Accordion>
+
+  <Accordion title="show logging">
+    ```frr
+    Router# show logging
+    ```
+
+    Shows the current logging configuration, including the status of all enabled logging destinations and their log levels.
+  </Accordion>
+
+  <Accordion title="show memory">
+    ```frr
+    Router# show memory
+    ```
+
+    Reports system allocator statistics and per-type memory usage for the running daemon. When run from `vtysh`, output is shown for each daemon in sequence.
+  </Accordion>
+
+  <Accordion title="find COMMAND">
+    ```frr
+    Router# find segment-routing on
+      (ospf)  segment-routing on
+
+    Router# find l2vpn
+      (view)  show [ip] bgp l2vpn evpn [json]
+      ...
+    ```
+
+    Performs a substring search across all defined commands in all modes. The CLI mode is shown next to each result.
+  </Accordion>
+
+  <Accordion title="who">
+    ```frr
+    Router# who
+    ```
+
+    Lists all currently connected VTY sessions.
+  </Accordion>
+
+  <Accordion title="list">
+    ```frr
+    Router# list
+    ```
+
+    Prints all available commands in the current mode.
+  </Accordion>
+
+  <Accordion title="logmsg">
+    ```frr
+    Router# logmsg errors "manual test message"
+    ```
+
+    Sends a message at the given severity to all currently enabled logging destinations. Useful for testing that logging is working correctly.
+  </Accordion>
+</AccordionGroup>
+
+## Sample configuration
+
+A minimal zebra daemon configuration:
+
+```frr
+!
+! Zebra configuration file
+!
+hostname Router
+password zebra
+enable password zebra
+!
+log stdout informational
+log file /var/log/frr/zebra.log warnings
+!
+```
+
+`!` and `#` are comment characters when placed at the start of a word. A comment character that is not the first character of a word is treated as a literal — for example, `zebra!password` sets the password to the string `zebra!password`.
+
+## VTY pipe actions
+
+VTY output can be filtered inline using a pipe modifier:
+
+```frr
+Router# show run | include neigh.*[0-9]{2}\.0\.[2-4]\.[0-9]*
+ neighbor 10.0.2.106 remote-as 99
+ neighbor 10.0.2.107 remote-as 99
+ neighbor 10.0.3.111 remote-as 111
+```
+
+`... | include REGEX` filters the preceding command's output, showing only lines matching the POSIX Extended Regular Expression. Do not quote the regex.
+
+## Common invocation options
+
+All FRR daemons accept these flags at startup:
+
+| Option | Description |
+|---|---|
+| `-d`, `--daemon` | Run in daemon mode (background). |
+| `-f FILE`, `--config_file FILE` | Use the specified config file instead of the default. |
+| `-A ADDR`, `--vty_addr ADDR` | Bind the VTY socket to this address only. |
+| `-P PORT`, `--vty_port PORT` | Set the VTY TCP port. `0` disables TCP VTY. |
+| `--log stdout\|syslog\|file:/path` | Set initial log destination at startup. |
+| `--log-level LEVEL` | Set initial log level at startup. |
+| `-M MODULE`, `--module MODULE` | Load an extension module at startup. |

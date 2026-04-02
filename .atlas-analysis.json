@@ -1,24 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "sonic-frr (FRRouting)",
+  "projectType": "infrastructure",
+  "projectName": "sonic-frr (FRRouting)",
+  "projectDescription": "A fork of FRRouting (FRR) for SONiC, providing a suite of routing protocol daemons including BGP, OSPF, IS-IS, RIP, LDP, BFD, and more for Linux-based network operating systems.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#eb5522",
-    "light": "#f4ac8c",
-    "dark": "#ffffff"
-  },
-  "favicon": "https://media.brand.dev/873523b4-4a32-482c-9464-6461a66e67ad.png",
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/sonic-net/sonic-frr"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/sonic-net/sonic-frr"
-    }
-  },
+  "primaryColor": "#eb5522",
+  "lightColor": "#f4ac8c",
+  "darkColor": "#ffffff",
   "navigation": {
     "tabs": [
       {
@@ -87,5 +74,35 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Multi-protocol routing suite: BGP, OSPF, IS-IS, RIP, LDP, BFD, PIM, EIGRP, NHRP, Babel, PBR",
+    "Zebra routing engine for kernel FIB management",
+    "Interactive CLI via vtysh shell with Cisco-like command syntax",
+    "VRF (Virtual Routing and Forwarding) support",
+    "YANG/NETCONF configuration management",
+    "Multi-threaded architecture for high performance",
+    "Route maps and prefix-list filtering",
+    "SNMP MIB support via AgentX",
+    "MPLS/LDP support",
+    "BFD fast failure detection"
+  ],
+  "publicApiSurface": [
+    "zebra — kernel routing table manager daemon",
+    "bgpd — BGP routing daemon",
+    "ospfd — OSPFv2 routing daemon",
+    "ospf6d — OSPFv3 routing daemon",
+    "ripd — RIPv1/v2 routing daemon",
+    "ripngd — RIPng IPv6 routing daemon",
+    "isisd — IS-IS routing daemon",
+    "pimd — PIM-SM multicast daemon",
+    "ldpd — LDP MPLS daemon",
+    "bfdd — BFD daemon",
+    "eigrpd — EIGRP routing daemon (alpha)",
+    "nhrpd — NHRP daemon (alpha)",
+    "babeld — Babel routing daemon",
+    "pbrd — Policy-Based Routing daemon",
+    "staticd — Static routing daemon",
+    "vtysh — Integrated CLI shell for all daemons"
+  ]
 }

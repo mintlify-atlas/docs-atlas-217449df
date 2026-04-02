@@ -1,0 +1,282 @@
+---
+title: "BFD"
+description: "Bidirectional Forwarding Detection for fast link and path failure detection"
+---
+
+BFD (Bidirectional Forwarding Detection) is a lightweight, high-speed protocol (RFC 5880, RFC 5881, RFC 5883) designed to detect forwarding path failures in milliseconds — far faster than the hello timers of routing protocols like BGP (default 90s hold timer) or OSPF (default 40s dead interval). BFD runs independently of routing protocols and notifies them immediately when a path fails, enabling sub-second convergence.
+
+FRR's `bfdd` daemon implements BFD natively and integrates with BGP, OSPF, OSPFv3, and PIM.
+
+## Why BFD?
+
+Without BFD, failure detection depends entirely on the routing protocol's own timers. For example:
+
+- BGP default hold timer: **90 seconds**
+- OSPF default dead interval: **40 seconds**
+- IS-IS default hold timer: **~27 seconds**
+
+BFD can detect failures in as little as **50–300 milliseconds** by sending lightweight control packets at high frequency. When BFD detects a failure, it immediately notifies the registered routing protocol, which then reroutes traffic.
+
+## Starting bfdd
+
+<Steps>
+  <Step title="Enable bfdd in /etc/frr/daemons">
+    ```bash
+    bfdd=yes
+    ```
+  </Step>
+  <Step title="Start FRR">
+    ```bash
+    systemctl start frr
+    ```
+  </Step>
+  <Step title="Verify bfdd is running">
+    ```bash
+    ps -ef | grep bfdd
+    ```
+  </Step>
+</Steps>
+
+The `bfdd` daemon reads its configuration from `bfdd.conf`. You can specify a custom control socket location:
+
+```bash
+/usr/lib/frr/bfdd --bfdctl /tmp/bfdd.sock
+```
+
+## BFD peer configuration
+
+BFD peers are defined in the `bfd` configuration node. Each peer corresponds to a forwarding path you want to monitor.
+
+### Basic peer
+
+```frr
+bfd
+ peer 192.168.0.1
+  no shutdown
+ !
+!
+```
+
+### Peer on a specific interface
+
+```frr
+bfd
+ peer 192.168.0.1 interface eth0
+  no shutdown
+ !
+!
+```
+
+### Multi-hop peer
+
+For paths that span more than one hop (e.g., monitoring an eBGP multi-hop session):
+
+```frr
+bfd
+ peer 10.0.0.5 multihop local-address 10.0.0.1
+  no shutdown
+ !
+!
+```
+
+<Note>
+Echo mode is not supported on multi-hop BFD sessions (RFC 5883, section 3).
+</Note>
+
+### Peer in a VRF
+
+```frr
+bfd
+ peer 192.168.0.1 vrf RED
+  no shutdown
+ !
+!
+```
+
+### Labeled peer
+
+Assign a label so other daemons can reference this peer by name:
+
+```frr
+bfd
+ peer 192.168.0.1
+  label core-peer
+  no shutdown
+ !
+!
+```
+
+## BFD timers
+
+BFD timers are configured per peer and control the detection speed vs. CPU/bandwidth trade-off:
+
+```frr
+bfd
+ peer 192.168.0.1
+  detect-multiplier 3
+  receive-interval 300
+  transmit-interval 300
+  no shutdown
+ !
+!
+```
+
+<CardGroup cols={3}>
+  <Card title="detect-multiplier" icon="x">
+    Number of missed packets before declaring the session down. Default: 3. Range: 2–255. Detection time = `detect-multiplier × remote transmit-interval`.
+  </Card>
+  <Card title="receive-interval" icon="arrow-down">
+    Minimum interval (ms) this system can receive BFD control packets. Default: 300 ms. Range: 10–60000 ms.
+  </Card>
+  <Card title="transmit-interval" icon="arrow-up">
+    Minimum interval (ms) between BFD control packets sent by this system. Default: 300 ms. Range: 10–60000 ms.
+  </Card>
+</CardGroup>
+
+With the defaults (`detect-multiplier 3`, `transmit-interval 300 ms`), failure detection takes approximately **900 ms**. For aggressive detection (e.g., 150 ms):
+
+```frr
+bfd
+ peer 192.168.0.1
+  detect-multiplier 3
+  receive-interval 50
+  transmit-interval 50
+  no shutdown
+ !
+!
+```
+
+<Warning>
+Very aggressive BFD timers (below 100 ms) increase CPU and can cause false positives during periods of high load. Test thoroughly before deploying sub-100 ms intervals in production.
+</Warning>
+
+### Echo mode
+
+Echo mode sends packets that loop back through the remote forwarding plane, testing only the data path without involving the remote CPU:
+
+```frr
+bfd
+ peer 192.168.0.1
+  echo-mode
+  echo-interval 50
+  transmit-interval 2000
+  no shutdown
+ !
+!
+```
+
+When echo mode is enabled, increase the control packet transmit interval to reduce bandwidth usage.
+
+## Integrating BFD with BGP
+
+Register a BGP neighbor for BFD monitoring inside the BGP configuration:
+
+```frr
+bfd
+ peer 192.168.0.1
+  label bgp-peer-1
+  no shutdown
+ !
+ peer 192.168.0.2
+  no shutdown
+ !
+!
+router bgp 65001
+ neighbor 192.168.0.1 remote-as 65002
+ neighbor 192.168.0.1 bfd
+ neighbor 192.168.0.2 remote-as 65001
+ neighbor 192.168.0.2 bfd
+!
+```
+
+When BFD detects that `192.168.0.1` is unreachable, it immediately signals BGP to tear down the session, which triggers BGP to withdraw routes and reconverge — without waiting for the BGP hold timer to expire.
+
+## Integrating BFD with OSPF
+
+Enable BFD monitoring for OSPF neighbors on an interface:
+
+```frr
+interface eth0
+ ip ospf bfd
+!
+```
+
+Every time OSPF forms a new adjacency on `eth0`, a BFD peer is automatically created for that neighbor. If BFD detects a failure, OSPF immediately removes the neighbor and recalculates the SPF.
+
+## Integrating BFD with OSPFv3
+
+```frr
+interface eth0
+ ipv6 ospf6 bfd
+!
+```
+
+## Integrating BFD with PIM
+
+```frr
+interface eth0
+ ip pim bfd
+!
+```
+
+## Complete BFD + BGP example
+
+```frr
+bfd
+ peer 192.168.1.1
+  detect-multiplier 3
+  receive-interval 300
+  transmit-interval 300
+  label upstream-peer
+  no shutdown
+ !
+!
+router bgp 65001
+ bgp router-id 10.0.0.1
+ neighbor 192.168.1.1 remote-as 65002
+ neighbor 192.168.1.1 bfd
+ neighbor 192.168.1.1 description upstream-AS65002
+ !
+ address-family ipv4 unicast
+  neighbor 192.168.1.1 activate
+ exit-address-family
+!
+```
+
+## Show commands
+
+```frr
+! All configured BFD peers and their status
+show bfd peers
+
+! Specific peer by address
+show bfd peer 192.168.0.1
+
+! Specific peer by label
+show bfd peer core-peer
+
+! JSON output for scripting
+show bfd peers json
+```
+
+### Example show output
+
+```
+frr# show bfd peers
+BFD Peers:
+        peer 192.168.0.1
+                ID: 1
+                Remote ID: 1
+                Status: up
+                Uptime: 1 minute(s), 51 second(s)
+                Diagnostics: ok
+                Remote diagnostics: ok
+                Local timers:
+                        Receive interval: 300ms
+                        Transmission interval: 300ms
+                        Echo transmission interval: disabled
+                Remote timers:
+                        Receive interval: 300ms
+                        Transmission interval: 300ms
+                        Echo transmission interval: 50ms
+```

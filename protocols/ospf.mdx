@@ -1,0 +1,260 @@
+---
+title: "OSPFv2"
+description: "Open Shortest Path First v2 for IPv4 networks"
+---
+
+Open Shortest Path First (OSPF) version 2 is a link-state Interior Gateway Protocol (IGP) described in RFC 2328. Unlike distance-vector protocols, each OSPF router builds a complete map of the network topology by flooding Link State Advertisements (LSAs) and then runs the Dijkstra Shortest Path First (SPF) algorithm to compute loop-free routes. OSPF is widely deployed in ISP backbone and large enterprise networks due to its scalability and fast convergence.
+
+## Key concepts
+
+<CardGroup cols={3}>
+  <Card title="Link-State Database (LSDB)" icon="database">
+    Each router maintains a synchronized copy of the topology database. All routers in an area have identical LSDBs.
+  </Card>
+  <Card title="Areas" icon="grid-2x2">
+    OSPF networks are divided into areas to limit LSA flooding scope. All areas must connect to the backbone (Area 0).
+  </Card>
+  <Card title="DR/BDR election" icon="crown">
+    On multi-access networks (e.g., Ethernet), routers elect a Designated Router and Backup DR to reduce adjacency overhead.
+  </Card>
+</CardGroup>
+
+## Starting ospfd
+
+`ospfd` requires `zebra` to be running first so it can obtain interface information.
+
+<Steps>
+  <Step title="Enable ospfd in /etc/frr/daemons">
+    ```bash
+    ospfd=yes
+    ```
+  </Step>
+  <Step title="Start FRR">
+    ```bash
+    systemctl start frr
+    ```
+  </Step>
+  <Step title="Verify ospfd is running">
+    ```bash
+    ps -ef | grep ospfd
+    ```
+  </Step>
+</Steps>
+
+`ospfd` accepts the standard FRR common invocation options. Use `-n INSTANCE` to start a specific OSPF instance (multi-instance support). The `--apiserver` flag enables the OSPF API server required by `ospfclient`.
+
+### Multi-instance support
+
+Multiple OSPF instances can run simultaneously. Enable them in `/etc/frr/daemons`:
+
+```bash
+ospfd=yes
+ospfd_instances=1,5,6
+```
+
+Each instance is addressed independently in configuration:
+
+```frr
+router ospf 5
+ router-id 1.2.3.4
+ area 0.0.0.0 authentication message-digest
+```
+
+## Basic OSPF configuration
+
+### Router and router-id
+
+```frr
+router ospf
+ ospf router-id 10.0.0.1
+ log-adjacency-changes detail
+!
+```
+
+The router-id must be unique within the OSPF domain. If not specified, `ospfd` obtains one automatically from `zebra` (typically the highest IP on a loopback).
+
+### Network statements
+
+The `network PREFIX area AREA` command enables OSPF on all interfaces whose addresses fall within the prefix:
+
+```frr
+router ospf
+ ospf router-id 10.0.0.1
+ network 10.0.1.0/24 area 0
+ network 10.0.2.0/24 area 1
+ network 192.168.0.0/16 area 1
+!
+```
+
+<Note>
+Area 0 (0.0.0.0) is the backbone area. All other areas must have at least one ABR (Area Border Router) connected to area 0.
+</Note>
+
+## OSPF areas
+
+### Stub areas
+
+Stub areas do not receive Type 5 (AS External) LSAs. ABRs inject a default route instead, reducing LSDB size in the stub area:
+
+```frr
+router ospf
+ area 1 stub
+!
+```
+
+### Totally stubby areas
+
+Totally stubby areas additionally suppress Type 3 (Summary) LSAs. Only a default route is advertised:
+
+```frr
+router ospf
+ area 1 stub no-summary
+!
+```
+
+### Not-So-Stubby Areas (NSSA)
+
+NSSAs allow limited external route redistribution using Type 7 LSAs, which are translated to Type 5 at the ABR:
+
+```frr
+router ospf
+ area 2 nssa
+!
+```
+
+### Virtual links
+
+When an area cannot directly connect to the backbone, a virtual link through a transit area extends the backbone connectivity:
+
+```frr
+router ospf
+ area 1 virtual-link 10.0.0.2
+!
+```
+
+## Interface-level OSPF settings
+
+Interface parameters are configured under the interface node, not the OSPF router node:
+
+```frr
+interface eth0
+ ip ospf cost 10
+ ip ospf priority 100
+ ip ospf hello-interval 5
+ ip ospf dead-interval 20
+ ip ospf retransmit-interval 5
+ ip ospf network point-to-point
+!
+```
+
+<CardGroup cols={2}>
+  <Card title="ospf cost" icon="calculator">
+    Link cost for SPF computation. Default is derived from the interface bandwidth relative to `auto-cost reference-bandwidth` (default 100 Mbit/s).
+  </Card>
+  <Card title="ospf priority" icon="arrow-up-right">
+    Influences DR/BDR election. A priority of 0 prevents the router from being elected. Range 0–255, default 1.
+  </Card>
+  <Card title="ospf hello-interval" icon="clock">
+    Interval in seconds between Hello packets. Must match on both ends of a link. Default 10s.
+  </Card>
+  <Card title="ospf dead-interval" icon="timer-off">
+    Time in seconds before declaring a neighbor dead after missing Hellos. Must match. Default 40s.
+  </Card>
+</CardGroup>
+
+### Passive interfaces
+
+Use `passive-interface` to advertise a connected network into OSPF without sending or receiving OSPF packets on that interface:
+
+```frr
+router ospf
+ passive-interface eth1
+ passive-interface lo
+!
+```
+
+## Redistribution into OSPF
+
+```frr
+router ospf
+ redistribute connected
+ redistribute static metric 20 metric-type 2
+ redistribute bgp metric-type 1
+!
+```
+
+- **Type 1 (E1)** — external cost = internal OSPF cost + external metric. Preferred for more accurate cost accounting.
+- **Type 2 (E2)** — external cost = only the external metric. Default type.
+
+## SPF tuning
+
+The SPF throttle timer controls how quickly OSPF reacts to topology changes:
+
+```frr
+router ospf
+ timers throttle spf 50 100 5000
+!
+```
+
+The three values are: initial delay (ms), initial holdtime (ms), and maximum holdtime (ms).
+
+## Complete OSPF configuration example
+
+```frr
+interface lo
+ ip ospf cost 1
+!
+interface eth0
+ ip ospf cost 10
+ ip ospf hello-interval 5
+ ip ospf dead-interval 20
+ ip ospf priority 100
+!
+interface eth1
+ ip ospf cost 100
+ ip ospf hello-interval 10
+ ip ospf dead-interval 40
+!
+router ospf
+ ospf router-id 10.0.0.1
+ log-adjacency-changes detail
+ timers throttle spf 50 100 5000
+ network 10.0.0.0/8 area 0
+ network 172.16.0.0/12 area 1
+ area 1 stub
+ redistribute connected
+ passive-interface lo
+!
+```
+
+## Show commands
+
+```frr
+! Overview of OSPF process, router-id, areas
+show ip ospf
+
+! Neighbor table with states and DR/BDR
+show ip ospf neighbor
+
+! Detailed neighbor information
+show ip ospf neighbor detail
+
+! Link-state database summary
+show ip ospf database
+
+! All LSAs of a specific type
+show ip ospf database router
+show ip ospf database network
+show ip ospf database summary
+show ip ospf database external
+
+! Interface configuration and costs
+show ip ospf interface
+
+! OSPF routes in the routing table
+show ip ospf route
+```
+
+<Warning>
+If neighbors are stuck in `ExStart` or `Exchange` state, check that MTU matches on both sides or configure `ip ospf mtu-ignore` on the affected interface.
+</Warning>

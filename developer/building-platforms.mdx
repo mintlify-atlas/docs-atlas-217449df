@@ -1,0 +1,462 @@
+---
+title: "Platform-Specific Build Instructions"
+description: "Detailed build steps for Ubuntu, Debian, CentOS, and other platforms"
+---
+
+This page provides platform-specific package names and build steps for the most common FRR deployment targets. All platforms follow the same general workflow described in [Building FRR](/developer/building), but the dependency package names and user/group creation commands differ.
+
+<Tabs>
+
+<Tab title="Ubuntu 18.04">
+
+## Ubuntu 18.04 LTS
+
+Ubuntu 18.04 ships kernel 4.15, which includes MPLS modules. MPLS is supported on this platform.
+
+### Install dependencies
+
+```bash
+sudo apt update
+sudo apt-get install \
+   git autoconf automake libtool make libreadline-dev texinfo \
+   pkg-config libpam0g-dev libjson-c-dev bison flex python-pytest \
+   libc-ares-dev python3-dev libsystemd-dev python-ipaddress python3-sphinx \
+   install-info build-essential libsystemd-dev libsnmp-dev perl
+```
+
+Optional: Protobuf support for BMP and other features:
+
+```bash
+sudo apt-get install protobuf-c-compiler libprotobuf-c-dev
+```
+
+Optional: ZeroMQ support:
+
+```bash
+sudo apt-get install libzmq5 libzmq3-dev
+```
+
+### Build libyang from source
+
+```bash
+sudo apt-get install cmake libpcre2-dev
+git clone https://github.com/CESNET/libyang.git
+cd libyang
+git checkout v1.0.184
+mkdir build && cd build
+cmake -DENABLE_LYD_PRIV=ON -DCMAKE_INSTALL_PREFIX=/usr \
+  -D CMAKE_BUILD_TYPE:String="Release" ..
+make
+sudo make install
+```
+
+### Create frr user and groups
+
+```bash
+sudo groupadd -r -g 92 frr
+sudo groupadd -r -g 85 frrvty
+sudo adduser --system --ingroup frr --home /var/run/frr/ \
+   --gecos "FRR suite" --shell /sbin/nologin frr
+sudo usermod -a -G frrvty frr
+```
+
+### Compile and install FRR
+
+```bash
+git clone https://github.com/frrouting/frr.git frr
+cd frr
+./bootstrap.sh
+./configure \
+    --prefix=/usr \
+    --includedir=${prefix}/include \
+    --bindir=${prefix}/bin \
+    --sbindir=${prefix}/lib/frr \
+    --libdir=${prefix}/lib/frr \
+    --libexecdir=${prefix}/lib/frr \
+    --localstatedir=/var/run/frr \
+    --sysconfdir=/etc/frr \
+    --with-moduledir=${prefix}/lib/frr/modules \
+    --enable-configfile-mask=0640 \
+    --enable-logfile-mask=0640 \
+    --enable-snmp=agentx \
+    --enable-multipath=64 \
+    --enable-user=frr \
+    --enable-group=frr \
+    --enable-vty-group=frrvty \
+    --enable-systemd=yes \
+    --with-pkg-git-version
+make
+sudo make install
+```
+
+### Install configuration files
+
+```bash
+sudo install -m 775 -o frr -g frr -d /var/log/frr
+sudo install -m 775 -o frr -g frrvty -d /etc/frr
+sudo install -m 640 -o frr -g frrvty tools/etc/frr/vtysh.conf /etc/frr/vtysh.conf
+sudo install -m 640 -o frr -g frr tools/etc/frr/frr.conf /etc/frr/frr.conf
+sudo install -m 640 -o frr -g frr tools/etc/frr/daemons.conf /etc/frr/daemons.conf
+sudo install -m 640 -o frr -g frr tools/etc/frr/daemons /etc/frr/daemons
+```
+
+### Enable kernel IP forwarding
+
+Edit `/etc/sysctl.conf` and uncomment:
+
+```
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.forwarding=1
+```
+
+Apply: `sudo sysctl -p`
+
+### Enable MPLS (optional)
+
+Add to `/etc/modules-load.d/modules.conf`:
+
+```
+# Load MPLS Kernel Modules
+mpls_router
+mpls_iptunnel
+```
+
+Load immediately:
+
+```bash
+sudo modprobe mpls-router mpls-iptunnel
+```
+
+Add to `/etc/sysctl.conf` for each MPLS-enabled interface:
+
+```
+net.mpls.conf.eth0.input=1
+net.mpls.platform_labels=100000
+```
+
+### Install systemd service
+
+```bash
+sudo install -m 644 tools/frr.service /etc/systemd/system/frr.service
+sudo systemctl enable frr
+systemctl start frr
+```
+
+</Tab>
+
+<Tab title="Ubuntu 20.04">
+
+## Ubuntu 20.04 LTS
+
+Ubuntu 20.04 uses the same dependency set as 18.04 with updated package versions.
+
+### Install dependencies
+
+```bash
+sudo apt update
+sudo apt-get install \
+   git autoconf automake libtool make libreadline-dev texinfo \
+   pkg-config libpam0g-dev libjson-c-dev bison flex python3-pytest \
+   libc-ares-dev python3-dev libsystemd-dev python3-sphinx \
+   install-info build-essential libsnmp-dev perl \
+   libcap-dev libelf-dev
+```
+
+Optional Protobuf:
+
+```bash
+sudo apt-get install protobuf-c-compiler libprotobuf-c-dev
+```
+
+### Build libyang from source
+
+```bash
+sudo apt-get install cmake libpcre2-dev
+git clone https://github.com/CESNET/libyang.git
+cd libyang
+git checkout v1.0.184
+mkdir build && cd build
+cmake -DENABLE_LYD_PRIV=ON -DCMAKE_INSTALL_PREFIX=/usr \
+  -D CMAKE_BUILD_TYPE:String="Release" ..
+make
+sudo make install
+```
+
+### Create frr user and groups
+
+```bash
+sudo groupadd -r -g 92 frr
+sudo groupadd -r -g 85 frrvty
+sudo adduser --system --ingroup frr --home /var/run/frr/ \
+   --gecos "FRR suite" --shell /sbin/nologin frr
+sudo usermod -a -G frrvty frr
+```
+
+### Compile and install FRR
+
+```bash
+git clone https://github.com/frrouting/frr.git frr
+cd frr
+./bootstrap.sh
+./configure \
+    --prefix=/usr \
+    --sbindir=/usr/lib/frr \
+    --sysconfdir=/etc/frr \
+    --localstatedir=/var/run/frr \
+    --enable-multipath=64 \
+    --enable-user=frr \
+    --enable-group=frr \
+    --enable-vty-group=frrvty \
+    --enable-systemd=yes \
+    --enable-snmp=agentx \
+    --with-pkg-git-version
+make
+sudo make install
+```
+
+### Install configuration files
+
+```bash
+sudo install -m 775 -o frr -g frr -d /var/log/frr
+sudo install -m 775 -o frr -g frrvty -d /etc/frr
+sudo install -m 640 -o frr -g frrvty tools/etc/frr/vtysh.conf /etc/frr/vtysh.conf
+sudo install -m 640 -o frr -g frr tools/etc/frr/frr.conf /etc/frr/frr.conf
+sudo install -m 640 -o frr -g frr tools/etc/frr/daemons /etc/frr/daemons
+sudo install -m 644 tools/frr.service /etc/systemd/system/frr.service
+sudo systemctl enable frr
+systemctl start frr
+```
+
+</Tab>
+
+<Tab title="Debian 9">
+
+## Debian 9 (Stretch)
+
+### Install dependencies
+
+```bash
+sudo apt-get install git autoconf automake libtool make \
+  libreadline-dev texinfo libjson-c-dev pkg-config bison flex python-pip \
+  libc-ares-dev python3-dev python-pytest python3-sphinx build-essential \
+  libsystemd-dev
+```
+
+### Build libyang from source
+
+```bash
+sudo apt-get install cmake libpcre2-dev
+git clone https://github.com/CESNET/libyang.git
+cd libyang
+git checkout v1.0.184
+mkdir build && cd build
+cmake -DENABLE_LYD_PRIV=ON -DCMAKE_INSTALL_PREFIX=/usr \
+  -D CMAKE_BUILD_TYPE:String="Release" ..
+make
+sudo make install
+```
+
+### Create frr user and groups
+
+```bash
+sudo addgroup --system --gid 92 frr
+sudo addgroup --system --gid 85 frrvty
+sudo adduser --system --ingroup frr --home /var/opt/frr/ \
+   --gecos "FRR suite" --shell /bin/false frr
+sudo usermod -a -G frrvty frr
+```
+
+### Compile and install FRR
+
+```bash
+git clone https://github.com/frrouting/frr.git frr
+cd frr
+./bootstrap.sh
+./configure \
+    --enable-exampledir=/usr/share/doc/frr/examples/ \
+    --localstatedir=/var/opt/frr \
+    --sbindir=/usr/lib/frr \
+    --sysconfdir=/etc/frr \
+    --enable-multipath=64 \
+    --enable-user=frr \
+    --enable-group=frr \
+    --enable-vty-group=frrvty \
+    --enable-configfile-mask=0640 \
+    --enable-logfile-mask=0640 \
+    --enable-fpm \
+    --with-pkg-git-version \
+    --with-pkg-extra-version=-MyOwnFRRVersion
+make
+make check
+sudo make install
+```
+
+### Create FRR configuration files
+
+```bash
+sudo install -m 755 -o frr -g frr -d /var/log/frr
+sudo install -m 755 -o frr -g frr -d /var/opt/frr
+sudo install -m 775 -o frr -g frrvty -d /etc/frr
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/zebra.conf
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/bgpd.conf
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/ospfd.conf
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/ospf6d.conf
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/isisd.conf
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/ripd.conf
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/ripngd.conf
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/pimd.conf
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/ldpd.conf
+sudo install -m 640 -o frr -g frr /dev/null /etc/frr/nhrpd.conf
+sudo install -m 640 -o frr -g frrvty /dev/null /etc/frr/vtysh.conf
+```
+
+### Enable IP forwarding
+
+Edit `/etc/sysctl.conf`:
+
+```
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.forwarding=1
+```
+
+Apply: `sudo sysctl -p`
+
+### Troubleshooting: shared library not found
+
+If daemons fail to start with a `libfrr.so.0: cannot open shared object file` error:
+
+```bash
+echo include /usr/local/lib >> /etc/ld.so.conf
+ldconfig
+```
+
+</Tab>
+
+<Tab title="CentOS 7">
+
+## CentOS 7
+
+<Warning>
+MPLS is **not supported** on CentOS 7 with the default kernel. MPLS requires Linux kernel 4.5 or higher. LDP can be built but may have limited functionality without MPLS.
+</Warning>
+
+### Install dependencies
+
+```bash
+sudo yum install git autoconf automake libtool make \
+  readline-devel texinfo net-snmp-devel groff pkgconfig \
+  json-c-devel pam-devel bison flex pytest c-ares-devel \
+  python-devel systemd-devel python-sphinx
+```
+
+### Build libyang from source
+
+```bash
+sudo yum install cmake pcre2-devel
+git clone https://github.com/CESNET/libyang.git
+cd libyang
+git checkout v1.0.184
+mkdir build && cd build
+cmake -DENABLE_LYD_PRIV=ON -DCMAKE_INSTALL_PREFIX=/usr \
+  -D CMAKE_BUILD_TYPE:String="Release" ..
+make
+sudo make install
+```
+
+### Create frr user and groups
+
+```bash
+sudo groupadd -g 92 frr
+sudo groupadd -r -g 85 frrvty
+sudo useradd -u 92 -g 92 -M -r -G frrvty -s /sbin/nologin \
+  -c "FRR FRRouting suite" -d /var/run/frr frr
+```
+
+### Compile and install FRR
+
+```bash
+git clone https://github.com/frrouting/frr.git frr
+cd frr
+./bootstrap.sh
+./configure \
+    --bindir=/usr/bin \
+    --sbindir=/usr/lib/frr \
+    --sysconfdir=/etc/frr \
+    --libdir=/usr/lib/frr \
+    --libexecdir=/usr/lib/frr \
+    --localstatedir=/var/run/frr \
+    --with-moduledir=/usr/lib/frr/modules \
+    --enable-snmp=agentx \
+    --enable-multipath=64 \
+    --enable-user=frr \
+    --enable-group=frr \
+    --enable-vty-group=frrvty \
+    --enable-systemd=yes \
+    --disable-exampledir \
+    --disable-ldpd \
+    --enable-fpm \
+    --with-pkg-git-version \
+    --with-pkg-extra-version=-MyOwnFRRVersion
+make
+make check
+sudo make install
+```
+
+### Create FRR configuration files
+
+```bash
+sudo mkdir /var/log/frr
+sudo mkdir /etc/frr
+sudo touch /etc/frr/zebra.conf
+sudo touch /etc/frr/bgpd.conf
+sudo touch /etc/frr/ospfd.conf
+sudo touch /etc/frr/ospf6d.conf
+sudo touch /etc/frr/isisd.conf
+sudo touch /etc/frr/ripd.conf
+sudo touch /etc/frr/ripngd.conf
+sudo touch /etc/frr/pimd.conf
+sudo touch /etc/frr/nhrpd.conf
+sudo touch /etc/frr/eigrpd.conf
+sudo touch /etc/frr/babeld.conf
+sudo chown -R frr:frr /etc/frr/
+sudo touch /etc/frr/vtysh.conf
+sudo chown frr:frrvty /etc/frr/vtysh.conf
+sudo chmod 640 /etc/frr/*.conf
+```
+
+### Install daemon config and service files
+
+```bash
+sudo install -p -m 644 redhat/daemons /etc/frr/
+sudo chown frr:frr /etc/frr/daemons
+sudo install -p -m 644 redhat/frr.service /usr/lib/systemd/system/frr.service
+sudo install -p -m 755 redhat/frr.init /usr/lib/frr/frr
+```
+
+### Enable IP forwarding
+
+Create `/etc/sysctl.d/90-routing-sysctl.conf`:
+
+```
+# Routing: We need to forward packets
+net.ipv4.conf.all.forwarding=1
+net.ipv6.conf.all.forwarding=1
+```
+
+Apply:
+
+```bash
+sudo sysctl -p /etc/sysctl.d/90-routing-sysctl.conf
+```
+
+### Enable and start FRR
+
+```bash
+sudo systemctl preset frr.service
+sudo systemctl enable frr
+sudo systemctl start frr
+```
+
+</Tab>
+
+</Tabs>

@@ -1,97 +1,67 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "sonic-frr (FRRouting)"
+description: "A suite of routing protocol daemons for SONiC and Linux-based network operating systems. Run BGP, OSPF, IS-IS, RIP, LDP, BFD, PIM, and more."
 ---
 
-## Setting up
+FRRouting (FRR) is a free, open-source routing software suite that implements and manages IPv4 and IPv6 routing protocols. The sonic-frr fork is tailored for [SONiC](https://sonic-net.github.io/SONiC/) — the open-source network operating system — and runs on nearly all Linux distributions and BSD variants.
 
-Get your documentation site up and running in minutes.
+FRR uses a multi-daemon architecture: each routing protocol runs as an independent daemon, all coordinated by the **zebra** kernel routing manager. You interact with any daemon through the unified **vtysh** CLI shell.
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Learn about FRR's architecture, supported protocols, and how it fits into SONiC.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Install FRR from packages, Snap, or build from source.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Basic Setup" icon="gear" href="/basic-setup">
+    Enable daemons, configure passwords, and get your first router running.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="vtysh CLI" icon="terminal" href="/operations/vtysh">
+    Use the unified CLI shell to configure and monitor all routing daemons.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Supported routing protocols
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="BGP" icon="network-wired" href="/protocols/bgp">
+    Border Gateway Protocol — the internet's interdomain routing standard.
+  </Card>
+  <Card title="OSPF" icon="diagram-project" href="/protocols/ospf">
+    Open Shortest Path First — link-state IGP for IPv4 networks.
+  </Card>
+  <Card title="IS-IS" icon="sitemap" href="/protocols/isis">
+    Intermediate System to Intermediate System — scalable link-state IGP.
+  </Card>
+  <Card title="LDP / MPLS" icon="layer-group" href="/protocols/ldp">
+    Label Distribution Protocol for MPLS label-switched paths.
+  </Card>
+  <Card title="BFD" icon="bolt" href="/protocols/bfd">
+    Bidirectional Forwarding Detection — sub-second failure detection.
+  </Card>
+  <Card title="PIM" icon="broadcast-tower" href="/protocols/pim">
+    Protocol Independent Multicast for multicast routing.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Getting started
 
-## Need inspiration?
+<Steps>
+  <Step title="Install FRR">
+    Install packages for your Linux distribution, or build from source. See [Installation](/installation).
+  </Step>
+  <Step title="Enable daemons">
+    Edit `/etc/frr/daemons` to activate the protocols you need (bgpd, ospfd, etc.). See [Basic Setup](/basic-setup).
+  </Step>
+  <Step title="Configure via vtysh">
+    Launch `vtysh` to enter the unified CLI and configure your routing protocols interactively. See [vtysh CLI](/operations/vtysh).
+  </Step>
+  <Step title="Verify routing">
+    Use `show ip route`, `show bgp summary`, or protocol-specific `show` commands to verify routing table state.
+  </Step>
+</Steps>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Note>
+  sonic-frr is a fork of the upstream FRRouting project maintained by the SONiC community. It tracks upstream FRR closely while adding SONiC-specific integrations.
+</Note>

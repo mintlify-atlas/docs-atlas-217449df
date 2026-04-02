@@ -1,0 +1,287 @@
+---
+title: "Debugging"
+description: "Debug tools, GDB integration, and protocol-level debugging in FRR"
+---
+
+FRR provides multiple layers of debugging: protocol-level debug commands via vtysh, GDB helper scripts for low-level inspection, and standard Unix tools like Valgrind for memory analysis.
+
+## Protocol debug commands in vtysh
+
+Every FRR daemon exposes `debug` commands in vtysh. These commands enable per-subsystem debug logging without restarting the daemon.
+
+### BGP debugging
+
+```frr
+Router# debug bgp updates
+Router# debug bgp events
+Router# debug bgp keepalives
+Router# debug bgp neighbor-events
+Router# debug bgp nht
+Router# debug bgp update-groups
+```
+
+### OSPF debugging
+
+```frr
+Router# debug ospf event
+Router# debug ospf lsa
+Router# debug ospf nsm
+Router# debug ospf packet all
+Router# debug ospf zebra
+```
+
+### Zebra debugging
+
+```frr
+Router# debug zebra events
+Router# debug zebra fpm
+Router# debug zebra kernel
+Router# debug zebra nht
+Router# debug zebra packet
+Router# debug zebra rib
+```
+
+### IS-IS debugging
+
+```frr
+Router# debug isis adj-packets
+Router# debug isis route-events
+Router# debug isis snp-packets
+Router# debug isis spf-events
+Router# debug isis update-packets
+```
+
+### Enable/disable all debugging
+
+```frr
+Router# debug all
+Router# no debug all
+```
+
+<Warning>
+Enabling all debug output on a busy router can generate very large amounts of log data and may impact performance. Use targeted debug commands rather than `debug all` in production environments.
+</Warning>
+
+## Reading FRR logs
+
+FRR logs to syslog by default. To increase the log level to debug:
+
+```frr
+Router# configure terminal
+Router(config)# log syslog debugging
+```
+
+To log to a file at debug level:
+
+```frr
+Router(config)# log file /var/log/frr/frr.log debugging
+```
+
+To also set the per-daemon logging:
+
+```frr
+Router(config)# log stderr debugging
+```
+
+Debug output is visible via:
+
+```bash
+sudo journalctl -u frr -f
+# or
+tail -f /var/log/frr/frr.log
+```
+
+Each log line includes the daemon name, timestamp, and the debug category that generated it.
+
+## Core dumps
+
+Enable core dumps before starting FRR daemons to capture the state of a crashed process:
+
+```bash
+ulimit -c unlimited
+```
+
+To persist this setting across reboots, add it to `/etc/security/limits.conf`:
+
+```
+frr soft core unlimited
+frr hard core unlimited
+```
+
+Core files are written to the current working directory of the process, typically `/var/run/frr/`. To set a specific location:
+
+```bash
+echo '/tmp/core.%e.%p' | sudo tee /proc/sys/kernel/core_pattern
+```
+
+## GDB integration
+
+FRR ships GDB macro files in the `gdb/` directory of the source tree. These macros simplify inspection of FRR-specific data structures.
+
+### Loading the GDB macros
+
+```bash
+gdb /usr/lib/frr/zebra /tmp/core.zebra.12345
+(gdb) source /path/to/frr/gdb/lib.txt
+(gdb) source /path/to/frr/gdb/ospf.txt
+```
+
+### lib.txt macros
+
+`gdb/lib.txt` provides macros for common FRR library types:
+
+```
+dump_prefix4  <ptr>   - Print an IPv4 prefix (struct prefix *)
+dump_prefix6  <ptr>   - Print an IPv6 prefix (struct prefix *)
+dump_prefix   <ptr>   - Print any prefix (detects family automatically)
+dump_timeval  <ptr>   - Human-readable dump of a struct timeval *
+walk_route_table <ptr> - Walk a route_table and dump non-null info pointers
+```
+
+Example session:
+
+```
+(gdb) source ~/frr/gdb/lib.txt
+(gdb) break bgp_packet.c:613
+Breakpoint 3 at 0x7fa883033a32: file bgp_packet.c, line 613.
+(gdb) cont
+Breakpoint 3, bgp_write_packet (peer=0x7fa885199080) at bgp_packet.c:614
+(gdb) dump_prefix4 &adv->rn->p
+IPv4:10.1.1.0/24
+```
+
+### ospf.txt macros
+
+`gdb/ospf.txt` extends `lib.txt` with OSPF-specific helpers (requires `lib.txt` to be loaded first):
+
+```
+dump_ospf_lsa    <ptr>   - Dump an OSPF LSA (struct ospf_lsa *)
+walk_ospf_lsdb   <ptr>   - Walk an OSPF LSDB route table and dump all LSAs
+ospf_backbone_lsdb_top <type> - Get LSDB top pointer for backbone area
+```
+
+### Attaching to a running daemon
+
+```bash
+sudo gdb -p $(pidof zebra)
+(gdb) source /path/to/frr/gdb/lib.txt
+(gdb) bt
+```
+
+## The --enable-dev-build configure flag
+
+Building with `--enable-dev-build` enables additional compile-time assertions and sanity checks:
+
+```bash
+./configure --enable-dev-build [other flags...]
+make
+```
+
+This flag activates:
+
+- Additional `assert()` calls that would be too expensive for production builds.
+- Extra consistency checks in the memory allocator.
+- Stricter thread-safety assertions in the event loop.
+
+<Note>
+Do not use `--enable-dev-build` in production. The additional checks can cause processes to abort on conditions that a production build would handle gracefully.
+</Note>
+
+## Valgrind memory debugging
+
+Valgrind's memcheck tool can find memory leaks and invalid reads/writes in FRR daemons. Run a daemon directly under Valgrind:
+
+```bash
+sudo valgrind \
+  --tool=memcheck \
+  --leak-check=full \
+  --show-leak-kinds=all \
+  --track-origins=yes \
+  --log-file=/tmp/valgrind-zebra.log \
+  /usr/lib/frr/zebra -f /etc/frr/zebra.conf
+```
+
+FRR's `XMALLOC`/`XFREE` wrappers are compatible with Valgrind. The `MTYPE_*` system will report aggregate memory usage by type via `show memory` in vtysh, which is a useful complement to Valgrind's per-allocation tracking.
+
+<Warning>
+Running under Valgrind significantly slows daemon startup and processing. It is not suitable for measuring performance.
+</Warning>
+
+## Testing infrastructure
+
+FRR's test infrastructure lives in the `tests/` directory:
+
+```
+tests/
+├── topotests/       # End-to-end topology tests using network namespaces / Mininet
+├── lib/             # Unit tests for library components
+├── bgpd/            # BGP-specific unit tests
+├── isisd/           # IS-IS unit tests
+├── ospf6d/          # OSPFv3 unit tests
+└── helpers/         # Shared test utilities
+```
+
+### Running unit tests
+
+After building FRR, run the test suite:
+
+```bash
+make check
+```
+
+To run a specific test:
+
+```bash
+cd tests/bgpd
+./test_bgp_table
+```
+
+### Topotests
+
+Topotests run full FRR topologies inside network namespaces or a Mininet environment. They require additional setup:
+
+```bash
+cd tests/topotests
+sudo python3 -m pytest bgp_basic/test_bgp_basic.py -v
+```
+
+See `tests/topotests/README` for dependency and setup instructions.
+
+## Debugging the CLI
+
+To inspect the command graph for a running daemon's current mode:
+
+```bash
+sudo vtysh -c 'show cli graph' | dot -Tjpg -Grankdir=LR > graph.jpg
+```
+
+For the BGP node specifically:
+
+```bash
+sudo vtysh -c 'conf t' -c 'router bgp' -c 'show cli graph' \
+  | dot -Tjpg -Grankdir=LR > bgp_graph.jpg
+```
+
+To list all valid input permutations for the current node:
+
+```frr
+Router# list permutations
+```
+
+To check possible completions for a partially entered command, use tab completion in vtysh as usual.
+
+## Using show commands for live state inspection
+
+FRR's `show` commands are the primary tool for inspecting live routing state without a debugger:
+
+```frr
+Router# show ip route
+Router# show ip bgp summary
+Router# show ip ospf neighbor
+Router# show interface
+Router# show memory
+Router# show thread cpu
+Router# show event-loop statistics
+```
+
+`show memory` lists per-`MTYPE` allocation counts, which is useful for detecting gradual memory leaks without Valgrind. `show thread cpu` shows time spent in each event handler, which helps identify performance bottlenecks.

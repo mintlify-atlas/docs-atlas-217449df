@@ -1,0 +1,165 @@
+---
+title: "SNMP"
+description: "SNMP MIB support via Net-SNMP AgentX for FRR routing daemons"
+---
+
+FRR does not include its own SNMP agent. Instead it implements the AgentX protocol ([RFC 2741](https://www.rfc-editor.org/rfc/rfc2741)) to connect as a subagent to an external SNMP master agent — typically Net-SNMP's `snmpd`. This architecture keeps SNMP concerns out of the routing code while still exposing full MIB data to SNMP managers.
+
+<Note>
+SNMP support must be enabled at compile time with `--enable-snmp` or `--enable-snmp=agentx` and then loaded as a module at daemon startup. It is not active by default.
+</Note>
+
+## How AgentX works
+
+```text
+SNMP Manager  ──────────────►  snmpd (Net-SNMP master agent)
+                                        │
+                              AgentX protocol (Unix socket or TCP)
+                                        │
+                              ┌─────────┴─────────┐
+                           bgpd              ospfd   (FRR subagents)
+```
+
+Each FRR daemon that loads the SNMP module connects to `snmpd` as an AgentX subagent and registers the OID subtrees for its protocol MIBs. `snmpd` proxies incoming SNMP queries to the appropriate subagent.
+
+## Compile-time requirement
+
+FRR must be built with AgentX support:
+
+```bash
+./configure --enable-snmp
+# or equivalently:
+./configure --enable-snmp=agentx
+```
+
+The resulting `snmp` module is installed in the FRR modules directory (e.g. `/usr/lib/frr/modules/`).
+
+## Net-SNMP configuration
+
+### snmpd.conf
+
+Add the `master agentx` directive to `/etc/snmp/snmpd.conf` to enable AgentX subagent connections:
+
+```text
+#
+# example access restrictions setup
+#
+com2sec readonly default public
+group MyROGroup v1 readonly
+view all included .1 80
+access MyROGroup "" any noauth exact all none none
+#
+# enable master agent for AgentX subagents
+#
+master agentx
+```
+
+### Custom AgentX socket
+
+By default the AgentX protocol uses a Unix socket whose path depends on how Net-SNMP was compiled. To point FRR at a specific socket or use TCP transport, create `/etc/snmp/frr.conf`:
+
+```text
+[snmpd]
+# Use a remote master agent over TCP
+agentXSocket tcp:192.168.15.12:705
+```
+
+## Enabling AgentX in FRR daemons
+
+Load the SNMP module at daemon startup using the `-M snmp` option, then enable AgentX in the daemon's configuration file:
+
+```frr
+! /etc/frr/ospfd.conf
+!
+agentx
+!
+```
+
+The `agentx` command is available in global configuration mode on all daemons that support SNMP. Use `no agentx` to disable.
+
+When the connection is established, you will see a log message similar to:
+
+```text
+2012/05/25 11:39:08 ZEBRA: snmp[info]: NET-SNMP version 5.4.3 AgentX subagent connected
+```
+
+## Supported MIBs
+
+<CardGroup cols={2}>
+  <Card title="IP-MIB">
+    Standard IP statistics and address table (RFC 4293). Available via zebra.
+  </Card>
+  <Card title="IP-FORWARD-MIB">
+    IP route table (RFC 4292). Available via zebra.
+  </Card>
+  <Card title="BGP4-MIB (RFC 1657)">
+    BGP peer state, prefix counts, and path attributes. Available via bgpd.
+  </Card>
+  <Card title="OSPF-MIB">
+    OSPF router, area, interface, and neighbor tables. Available via ospfd.
+  </Card>
+  <Card title="RIPv2-MIB">
+    RIP routing table and peer information. Available via ripd.
+  </Card>
+  <Card title="MPLS-LDP-STD-MIB">
+    LDP session and FEC binding information. Available via ldpd.
+  </Card>
+</CardGroup>
+
+The SNMP module is loadable for the zebra, bgpd, ospfd, ospf6d, and ripd daemons.
+
+## Testing with snmpwalk
+
+After starting `snmpd` with the master agentx directive and FRR daemons with `agentx` configured, verify MIB access:
+
+```bash
+# Query the OSPF router ID (OID .1.3.6.1.2.1.14.1.1)
+snmpwalk -c public -v1 localhost .1.3.6.1.2.1.14.1.1
+# OSPF-MIB::ospfRouterId.0 = IpAddress: 192.168.42.109
+
+# Walk all BGP peer entries
+snmpwalk -c public -v2c localhost .1.3.6.1.2.1.15
+```
+
+## SNMP trap configuration
+
+The BGP4-MIB sends traps on peer up and peer down events. To capture them, configure a trap sink in `/etc/snmp/snmpd.conf`:
+
+```text
+# send traps to snmptrapd running on localhost
+trapsink localhost
+```
+
+Configure `snmptrapd` to handle BGP4 traps by OID in `/etc/snmp/snmptrapd.conf`:
+
+```text
+traphandle .1.3.6.1.4.1.3317.1.2.2 /etc/snmp/snmptrap_handle.sh
+```
+
+When a BGP peer transitions state, `snmpd` will log:
+
+```text
+snmpd[13733]: Got trap from peer on fd 14
+```
+
+<Tip>
+To find the OID for traps from other protocol daemons, consult the protocol's MIB definition. Each daemon's MIB lists the NOTIFICATION-TYPE objects it generates.
+</Tip>
+
+## Daemon startup with SNMP module
+
+Pass the `-M snmp` flag when starting daemons that should participate in SNMP:
+
+```bash
+ospfd -M snmp -f /etc/frr/ospfd.conf -d
+bgpd  -M snmp -f /etc/frr/bgpd.conf  -d
+zebra -M snmp -f /etc/frr/zebra.conf -d
+```
+
+When using the FRR service manager (`watchfrr`), add the module option to the daemon arguments in `/etc/frr/daemons`:
+
+```text
+ospfd_options="  -M snmp"
+bgpd_options="   -M snmp"
+zebra_options="  -M snmp"
+```

@@ -1,0 +1,268 @@
+---
+title: "BGP"
+description: "Border Gateway Protocol configuration and operation in FRR"
+---
+
+Border Gateway Protocol (BGP) version 4 is the de facto standard interdomain routing protocol and the foundation of Internet routing. FRR implements BGP-4 as described in RFC 4271, with multiprotocol extensions (RFC 2858) that enable BGP to carry routing information for IPv4, IPv6, VPNs, and labeled routes.
+
+## Autonomous systems and ASNs
+
+An Autonomous System (AS) is a connected group of IP prefixes operated under a single, clearly defined routing policy (RFC 1930). Each AS is identified by an **Autonomous System Number (ASN)** — a 16-bit value from 1 to 65535. ASNs 64512–65535 are reserved for private use and must not be advertised on the public Internet. 4-byte ASNs (RFC 6793) extend this range significantly for large-scale deployments.
+
+BGP uses two peering modes:
+
+- **eBGP (external BGP)** — sessions between routers in different autonomous systems. Routes traverse AS boundaries, and the AS path grows with each hop.
+- **iBGP (internal BGP)** — sessions between routers within the same AS. All iBGP routers must be fully meshed (or use route reflectors) because iBGP does not re-advertise routes learned from one iBGP peer to another.
+
+## Starting bgpd
+
+The `bgpd` daemon reads its configuration from `bgpd.conf` (or the integrated `frr.conf`). It must be started after `zebra` is running so that it can obtain interface and address information.
+
+<Steps>
+  <Step title="Enable bgpd in /etc/frr/daemons">
+    ```bash
+    bgpd=yes
+    ```
+  </Step>
+  <Step title="Start FRR">
+    ```bash
+    systemctl start frr
+    ```
+  </Step>
+  <Step title="Verify bgpd is running">
+    ```bash
+    ps -ef | grep bgpd
+    ```
+  </Step>
+</Steps>
+
+You can also invoke `bgpd` directly with options such as `-p <port>` to use a non-default BGP port, or `-l <address>` to listen on a specific IP address.
+
+## Basic BGP configuration
+
+### Router BGP and router-id
+
+Every BGP instance starts with `router bgp ASN`. The `bgp router-id` is a 32-bit dotted-decimal identifier that must be unique within the BGP domain. If not set manually, FRR selects the highest IP address of any interface.
+
+```frr
+router bgp 65001
+ bgp router-id 10.0.0.1
+!
+```
+
+### Configuring neighbors
+
+Use `neighbor IP remote-as ASN` to define a BGP peer. The remote ASN determines whether the session is iBGP or eBGP.
+
+```frr
+router bgp 65001
+ bgp router-id 10.0.0.1
+ !
+ ! eBGP peer in AS 65002
+ neighbor 192.0.2.2 remote-as 65002
+ neighbor 192.0.2.2 description upstream-provider
+ !
+ ! iBGP peer in same AS
+ neighbor 10.0.0.2 remote-as 65001
+ neighbor 10.0.0.2 update-source lo
+!
+```
+
+### Network announcements
+
+The `network` statement under an address family instructs BGP to originate a prefix, provided the exact prefix exists in the local routing table.
+
+```frr
+router bgp 65001
+ bgp router-id 10.0.0.1
+ neighbor 192.0.2.2 remote-as 65002
+ !
+ address-family ipv4 unicast
+  network 203.0.113.0/24
+  network 198.51.100.0/22
+ exit-address-family
+!
+```
+
+### Route redistribution
+
+Routes learned by other protocols can be injected into BGP:
+
+```frr
+router bgp 65001
+ address-family ipv4 unicast
+  redistribute connected
+  redistribute ospf
+  redistribute static
+ exit-address-family
+!
+```
+
+## BGP path attributes
+
+BGP selects the best path using an ordered decision process. The key attributes that influence selection are:
+
+<CardGroup cols={2}>
+  <Card title="Weight" icon="weight">
+    Cisco proprietary, local to the router. Higher weight is preferred. Set with `neighbor X weight VALUE` or in a route-map.
+  </Card>
+  <Card title="LOCAL_PREF" icon="arrow-up">
+    Shared within an AS via iBGP. Higher value is preferred. Default is 100.
+  </Card>
+  <Card title="MED (Multi-Exit Discriminator)" icon="arrows-split-up-and-left">
+    Suggested to a neighboring AS for selecting entry points. Lower MED is preferred, compared only between routes from the same AS.
+  </Card>
+  <Card title="AS path length" icon="list-ordered">
+    Shorter AS paths are preferred. Can be inflated with `as-path prepend` to make a path less attractive.
+  </Card>
+</CardGroup>
+
+Setting LOCAL_PREF and MED in a route-map:
+
+```frr
+route-map SET-LOCAL-PREF permit 10
+ set local-preference 200
+!
+route-map SET-MED permit 10
+ set metric 50
+!
+router bgp 65001
+ neighbor 192.0.2.2 route-map SET-LOCAL-PREF in
+ neighbor 192.0.2.2 route-map SET-MED out
+!
+```
+
+## Peer groups
+
+Peer groups reduce configuration duplication when multiple neighbors share the same policy:
+
+```frr
+router bgp 65001
+ neighbor UPSTREAM peer-group
+ neighbor UPSTREAM remote-as 65002
+ neighbor UPSTREAM route-map FILTER-IN in
+ neighbor UPSTREAM route-map FILTER-OUT out
+ neighbor UPSTREAM soft-reconfiguration inbound
+ !
+ neighbor 192.0.2.2 peer-group UPSTREAM
+ neighbor 192.0.2.6 peer-group UPSTREAM
+!
+```
+
+## BGP communities
+
+Communities are tags attached to routes that allow policy decisions at any AS along the path. Well-known communities include `no-export` (do not advertise beyond the AS) and `no-advertise`.
+
+```frr
+! Set a community on outbound routes
+route-map COMMUNITY-OUT permit 10
+ set community 65001:100
+!
+
+! Match and filter on a community
+ip community-list standard TRANSIT permit 65001:100
+!
+route-map COMMUNITY-FILTER permit 10
+ match community TRANSIT
+!
+```
+
+## Route reflectors
+
+In an iBGP full mesh, every iBGP router must peer with every other iBGP router — an O(n²) scaling problem. Route reflectors (RRs) solve this by re-advertising iBGP-learned routes to their iBGP clients.
+
+```frr
+! Route reflector configuration
+router bgp 65001
+ bgp router-id 10.0.0.1
+ !
+ ! These peers are RR clients
+ neighbor 10.0.1.1 remote-as 65001
+ neighbor 10.0.1.1 route-reflector-client
+ neighbor 10.0.1.2 remote-as 65001
+ neighbor 10.0.1.2 route-reflector-client
+!
+```
+
+<Note>
+Route reflectors introduce a cluster ID to prevent routing loops. Set `bgp cluster-id` when multiple RRs share the same cluster of clients.
+</Note>
+
+## Complete eBGP peering example
+
+The following shows a complete eBGP configuration between two routers: router A (AS 65001) peering with router B (AS 65002).
+
+<CodeGroup>
+
+```frr Router A (AS 65001)
+router bgp 65001
+ bgp router-id 192.0.2.1
+ bgp log-neighbor-changes
+ !
+ neighbor 192.0.2.2 remote-as 65002
+ neighbor 192.0.2.2 description peer-AS65002
+ neighbor 192.0.2.2 ebgp-multihop 2
+ neighbor 192.0.2.2 soft-reconfiguration inbound
+ !
+ address-family ipv4 unicast
+  network 203.0.113.0/24
+  neighbor 192.0.2.2 activate
+  neighbor 192.0.2.2 route-map FILTER-IN in
+  neighbor 192.0.2.2 route-map FILTER-OUT out
+ exit-address-family
+!
+ip prefix-list MY-PREFIXES permit 203.0.113.0/24
+!
+route-map FILTER-OUT permit 10
+ match ip address prefix-list MY-PREFIXES
+!
+route-map FILTER-IN permit 10
+!
+```
+
+```frr Router B (AS 65002)
+router bgp 65002
+ bgp router-id 192.0.2.2
+ bgp log-neighbor-changes
+ !
+ neighbor 192.0.2.1 remote-as 65001
+ neighbor 192.0.2.1 description peer-AS65001
+ neighbor 192.0.2.1 soft-reconfiguration inbound
+ !
+ address-family ipv4 unicast
+  network 198.51.100.0/24
+  neighbor 192.0.2.1 activate
+ exit-address-family
+!
+```
+
+</CodeGroup>
+
+## Show commands
+
+```frr
+! Summary of all BGP neighbors and their state
+show bgp summary
+
+! Full BGP table for IPv4 unicast
+show bgp ipv4 unicast
+
+! Detailed neighbor information
+show bgp neighbors
+
+! Routes received from a specific neighbor
+show bgp neighbors 192.0.2.2 received-routes
+
+! Routes advertised to a specific neighbor
+show bgp neighbors 192.0.2.2 advertised-routes
+
+! Look up a specific prefix
+show bgp ipv4 unicast 203.0.113.0/24
+
+! BGP IPv6 table
+show bgp ipv6 unicast
+```
+
+<Tip>
+Use `show bgp summary` first to verify neighbor states are `Established`. A state of `Active` means BGP is trying to connect but the TCP session has not yet been established.
+</Tip>

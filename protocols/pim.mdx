@@ -1,0 +1,253 @@
+---
+title: "PIM"
+description: "Protocol Independent Multicast Sparse Mode for multicast routing"
+---
+
+PIM (Protocol Independent Multicast) is a multicast routing protocol that builds distribution trees for IP multicast traffic. FRR's `pimd` daemon implements PIM Sparse Mode (PIM-SM), which is designed for networks where receivers are sparsely distributed and groups may be widely separated. PIM is "protocol independent" because it uses the existing unicast routing table (from any IGP or BGP) for Reverse Path Forwarding (RPF) checks rather than maintaining its own topology database.
+
+`pimd` also supports IGMP v2 and v3 for receiver group membership management, is VRF-aware, and can be used in EVPN underlay networks for optimizing BUM (Broadcast, Unknown-unicast, and Multicast) traffic forwarding.
+
+## PIM-SM fundamentals
+
+<CardGroup cols={2}>
+  <Card title="Rendezvous Point (RP)" icon="map-pin">
+    The meeting point for senders and receivers. Receivers send IGMP joins toward the RP, and senders register with the RP. All PIM routers in the domain must agree on the RP address for each multicast group.
+  </Card>
+  <Card title="Shared tree (*, G)" icon="tree">
+    The initial delivery tree rooted at the RP. Receivers join the shared tree until SPT switchover occurs.
+  </Card>
+  <Card title="Shortest Path Tree (S, G)" icon="arrow-right">
+    After traffic exceeds a threshold, the Last-Hop Router (LHR) switches to a source-specific tree for optimal routing directly from source to receiver.
+  </Card>
+  <Card title="Designated Router (DR)" icon="crown">
+    On each LAN segment, the PIM DR is responsible for sending PIM Join/Prune messages upstream and for handling IGMP reports from local receivers.
+  </Card>
+</CardGroup>
+
+## Starting pimd
+
+`pimd` requires `zebra` to be running first, and the underlying unicast routing must be correctly configured for RPF lookups to work.
+
+<Steps>
+  <Step title="Enable pimd in /etc/frr/daemons">
+    ```bash
+    pimd=yes
+    ```
+  </Step>
+  <Step title="Start FRR">
+    ```bash
+    systemctl start frr
+    ```
+  </Step>
+  <Step title="Verify pimd is running">
+    ```bash
+    ps -ef | grep pimd
+    ```
+  </Step>
+</Steps>
+
+## RP configuration
+
+A static RP must be configured on every PIM router in the domain. All routers must agree on the RP address and the group ranges it serves:
+
+```frr
+! RP 10.0.0.100 serves all multicast groups (224.0.0.0/4)
+ip pim rp 10.0.0.100 224.0.0.0/4
+
+! RP for a specific group range only
+ip pim rp 10.0.0.200 239.0.0.0/8
+```
+
+<Warning>
+All routers in the PIM domain must be configured with identical RP-to-group mappings. Inconsistent RP configuration is a common cause of multicast forwarding failures.
+</Warning>
+
+## Interface configuration
+
+### Enabling PIM-SM on an interface
+
+```frr
+interface eth0
+ ip pim sm
+!
+```
+
+This enables PIM neighbor discovery and Join/Prune message processing on the interface. Note: this alone does not enable IGMP — use `ip igmp` separately on interfaces where hosts need to join groups.
+
+### Enabling IGMP for receiver interfaces
+
+```frr
+interface eth1
+ ip igmp
+ ip igmp version 3
+ ip igmp query-interval 30
+ ip igmp query-max-response-time 100
+!
+```
+
+IGMP is used on the Last-Hop Router (LHR) to learn which groups local receivers want to join.
+
+### Complete interface setup
+
+An interface connecting to hosts (LHR) typically needs both PIM and IGMP:
+
+```frr
+interface eth1
+ ip pim sm
+ ip igmp
+ ip igmp version 3
+!
+```
+
+An interface connecting only to other PIM routers (not hosts) needs only PIM:
+
+```frr
+interface eth0
+ ip pim sm
+!
+```
+
+## PIM DR priority
+
+Influence which router becomes the Designated Router on a shared LAN:
+
+```frr
+interface eth0
+ ip pim drpriority 200
+!
+```
+
+Higher priority wins. Default is 1.
+
+## SPT switchover
+
+By default, once traffic exceeds a threshold on the shared tree, the LHR switches to the Shortest Path Tree (SPT) for optimal routing. To disable SPT switchover and always use the shared tree:
+
+```frr
+ip pim spt-switchover infinity-and-beyond
+```
+
+## ECMP for multicast
+
+Spread multicast (S,G) flows across equal-cost paths:
+
+```frr
+ip pim ecmp
+ip pim ecmp rebalance
+```
+
+With `ecmp rebalance`, if a nexthop interface goes down, PIM redistributes all flows across remaining paths.
+
+## Global PIM timers
+
+```frr
+! Join/prune message interval (60-600 seconds, default 60)
+ip pim join-prune-interval 60
+
+! Keep-alive timer for (S,G) states (31-60000 seconds)
+ip pim keep-alive-timer 210
+
+! Register suppress time (5-60000 seconds)
+ip pim register-suppress-time 60
+```
+
+## IGMP static joins
+
+Join a multicast source-group statically on an interface (useful for testing or anchoring the RP):
+
+```frr
+interface eth0
+ ip igmp join 239.1.1.1 10.0.0.1
+!
+```
+
+## BFD integration
+
+Enable BFD for fast PIM neighbor failure detection:
+
+```frr
+interface eth0
+ ip pim bfd
+!
+```
+
+## Multicast boundaries
+
+Prevent multicast join/prune from propagating across a boundary:
+
+```frr
+interface eth2
+ ip multicast boundary oil BLOCK-GROUPS
+!
+ip prefix-list BLOCK-GROUPS deny 239.255.0.0/16
+ip prefix-list BLOCK-GROUPS permit 0.0.0.0/0 le 32
+```
+
+## Complete PIM configuration example
+
+```frr
+! RP configuration (global)
+ip pim rp 10.0.0.100 224.0.0.0/4
+
+! Uplink interface (toward RP and other PIM routers)
+interface eth0
+ ip pim sm
+ ip pim drpriority 100
+ ip pim hello 30 90
+!
+
+! Downlink interface (toward receivers)
+interface eth1
+ ip pim sm
+ ip igmp
+ ip igmp version 3
+ ip igmp query-interval 30
+!
+
+! Loopback (used as RP address — configure on RP router)
+interface lo
+ ip address 10.0.0.100/32
+ ip pim sm
+!
+```
+
+## Show commands
+
+```frr
+! PIM neighbor table
+show ip pim neighbor
+
+! PIM interface state
+show ip pim interface
+
+! Multicast route table (mroute)
+show ip mroute
+
+! (*, G) and (S, G) state
+show ip pim state
+
+! RP information
+show ip pim rp-info
+
+! Upstream join state
+show ip pim upstream
+
+! Upstream join state (brief)
+show ip pim upstream-join-desired
+
+! DR information per interface
+show ip pim designated-router
+
+! IGMP group membership
+show ip igmp groups
+
+! IGMP interface state
+show ip igmp interface
+
+! IGMP sources
+show ip igmp sources
+```
+
+<Tip>
+Use `show ip mroute` to verify that (S,G) entries exist with the correct incoming and outgoing interface lists (OIL). An empty OIL means no active receivers on that path.
+</Tip>
